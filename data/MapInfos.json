@@ -38,5 +38,14 @@ null,
 {"id":36,"expanded":false,"name":"学生宿舍 · 生活区","order":36,"parentId":9,"scrollX":0,"scrollY":0},
 {"id":37,"expanded":false,"name":"训练中心 · 健身房","order":37,"parentId":9,"scrollX":0,"scrollY":0},
 {"id":38,"expanded":false,"name":"蓝湾游泳馆","order":38,"parentId":9,"scrollX":0,"scrollY":0},
-{"id":39,"expanded":false,"name":"星幕影院","order":39,"parentId":9,"scrollX":0,"scrollY":0}
+{"id":39,"expanded":false,"name":"星幕影院","order":39,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":40,"expanded":true,"name":"榆风市 · 中央街区","order":40,"parentId":0,"scrollX":0,"scrollY":0},
+{"id":41,"expanded":true,"name":"榆风广场 · 远征集合处","order":41,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":42,"expanded":true,"name":"街角便利商店","order":42,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":43,"expanded":true,"name":"换装美容工作室","order":43,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":44,"expanded":true,"name":"市民大厅","order":44,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":45,"expanded":true,"name":"榆风公寓 · 门厅","order":45,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":46,"expanded":true,"name":"榆风公寓 · 住宅层","order":46,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":47,"expanded":true,"name":"政务服务厅","order":47,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":48,"expanded":true,"name":"榆风公园","order":48,"parentId":40,"scrollX":0,"scrollY":0}
 ]

@@ -4,6 +4,7 @@ import {fileURLToPath} from 'node:url';
 import {loadContent} from '../server/content.mjs';
 import {GameHost} from '../server/instances.mjs';
 import {DIRECTIONS} from '../server/world.mjs';
+import {PUBLIC_CITY_MAPS,PUBLIC_CITY_SPAWN,PUBLIC_CITY_SERVICES,PUBLIC_CITY_VERSION} from '../server/public-city.mjs';
 
 const clone=x=>structuredClone(x);
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
@@ -43,7 +44,7 @@ async function fixture(){
   const content=await loadContent(fileURLToPath(new URL('../../',import.meta.url))),store=new MemoryStore(),messages=new Map();let time=100000;
   const host=new GameHost({content,store,clock:()=>time,random:()=>.5});await host.init();
   const rawCommand=host.command.bind(host);host.command=(player,message)=>rawCommand(player,{contextInstanceId:host.locations.get(player.id)?.id||null,...message});
-  async function connect(id){messages.set(id,[]);const account=await store.loadPlayer(id);return host.connect(account,m=>messages.get(id).push(m));}
+  async function connect(id,{atEntrance=true}={}){messages.set(id,[]);const account=await store.loadPlayer(id),player=await host.connect(account,m=>messages.get(id).push(m));if(atEntrance){const entry=PUBLIC_CITY_SERVICES.instance;await host.world.transfer(player,entry.mapId,entry.x,entry.y+1);}return player;}
   async function advance(ms=150){for(let left=ms;left>0;left-=50){time+=Math.min(left,50);host.update(Math.min(left,50)/1000);await Promise.resolve();}for(const p of host.players.values())await p._queue;}
   return{host,content,store,messages,connect,advance};
 }
@@ -63,13 +64,45 @@ async function walk(f,p,goal,allowBlockedGoal=false){const world=f.host.playerWo
 async function service(f,p,action,containerId){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.service?.action===action&&(!containerId||e.service.containerId===containerId));assert.ok(event,`missing ${action} on ${p.mapId}`);await walk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);await f.host.command(p,{type:'interact',targetId:event.id});return event;}
 async function portal(f,p,toMap){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.pages.some(pg=>pg.list.some(c=>c.code===201&&c.parameters[1]===toMap)));assert.ok(event,`missing portal ${p.mapId}->${toMap}`);await walk(f,p,pos=>pos.x===event.x&&pos.y===event.y,true);await p._queue;assert.equal(p.mapId,toMap);}
 
+test('new arrivals walk from the public city to its authored expedition guide and appearance NPC',async()=>{
+  const f=await fixture(),p=await f.connect('new-arrival',{atEntrance:false});
+  assert.deepEqual({mapId:p.mapId,x:p.x,y:p.y,direction:p.direction},PUBLIC_CITY_SPAWN);
+  await assert.rejects(f.host.command(p,{type:'instance',action:'create',mode:'pve'}),/中央广场/);
+  await portal(f,p,PUBLIC_CITY_SERVICES.instance.mapId);
+  const plaza=f.host.world.maps.get(p.mapId),guide=plaza.events.get('service:instance-guide');
+  assert.ok(guide);assert.equal([...plaza.events.values()].filter(e=>e.service?.kind==='instance').length,1);
+  assert.ok(plaza.raw.events.some(e=>e?.id===guide.eventId&&/engine_service\s*:\s*instance/.test(e.note)));
+  await walk(f,p,pos=>Math.abs(pos.x-guide.x)+Math.abs(pos.y-guide.y)<=1);
+  await f.host.command(p,{type:'interact',targetId:guide.id});
+  assert.ok(f.messages.get(p.id).some(m=>m.type==='service'&&m.service==='instance'));
+  const before={mapId:p.mapId,x:p.x,y:p.y};await f.host.command(p,{type:'instance',action:'create',mode:'pve'});
+  await f.host.command(f.host.getPlayer(p.id),{type:'instance',action:'leave'});
+  const returned=f.host.getPlayer(p.id);assert.deepEqual({mapId:returned.mapId,x:returned.x,y:returned.y},{mapId:before.mapId,x:before.x,y:before.y});
+  const salon=PUBLIC_CITY_SERVICES.appearance;await f.host.world.transfer(returned,salon.mapId,salon.x,salon.y+1);
+  const stylist=f.host.world.maps.get(salon.mapId).events.get('service:appearance-guide');assert.ok(stylist);
+  assert.equal([...f.host.world.maps.get(salon.mapId).events.values()].filter(e=>e.service?.kind==='appearance').length,1);
+  await f.host.command(returned,{type:'interact',targetId:stylist.id});
+  assert.ok(f.messages.get(p.id).some(m=>m.type==='service'&&m.service==='appearance'));
+  for(const id of PUBLIC_CITY_MAPS){const map=await f.host.world.ensureMap(id);assert.equal(map.pvp,false);assert.equal(map.zone,null);assert.ok([...map.events.values()].every(e=>!e.enemyId));assert.ok(!f.host.scenario.mapIds.includes(id));}
+});
+
+test('old starting-room saves migrate once while other locations, inventory and public return positions remain intact',async()=>{
+  const f=await fixture(),legacy={...f.host.world.defaultState(),mapId:1,x:13,y:6,gold:123,inventory:[{kind:'item',itemId:7,quantity:4}],selfSwitches:{'1:map:1:event:2:A':true}};
+  f.store.states.set('legacy',clone(legacy));let p=await f.connect('legacy',{atEntrance:false});
+  assert.equal(p.mapId,PUBLIC_CITY_SPAWN.mapId);assert.equal(p.publicCityVersion,PUBLIC_CITY_VERSION);assert.equal(p.gold,legacy.gold);assert.deepEqual(p.inventory,legacy.inventory);assert.deepEqual(p.selfSwitches,legacy.selfSwitches);
+  await f.host.world.transfer(p,1,13,6);const visit=clone(f.store.states.get(p.id));await f.host.world.detach(p.id);p=await f.connect('legacy',{atEntrance:false});
+  assert.deepEqual({mapId:p.mapId,x:p.x,y:p.y},{mapId:visit.mapId,x:visit.x,y:visit.y});
+  f.store.states.set('elsewhere',{...legacy,mapId:3,x:25,y:32});const other=await f.connect('elsewhere',{atEntrance:false});
+  assert.equal(other.mapId,3);assert.equal(other.publicCityVersion,PUBLIC_CITY_VERSION);assert.deepEqual(other.inventory,legacy.inventory);
+});
+
 test('NPC entry leaves the external world intact and independent rounds do not share maps or combat targets',async()=>{
   const f=await fixture(),a=await f.connect('a'),b=await f.connect('b');const before=clone(f.store.states.get('a'));
   await f.host.command(a,{type:'interact',targetId:'service:instance-guide'});assert.ok(f.messages.get('a').some(m=>m.type==='service'&&m.service==='instance'));
   await f.host.command(a,{type:'instance',action:'create',mode:'pve'});await f.host.command(b,{type:'instance',action:'create',mode:'pvpve'});
   const ra=f.host.locations.get('a'),rb=f.host.locations.get('b');await f.host.command(a,{type:'instance',action:'start'});await f.host.command(b,{type:'instance',action:'start'});
   assert.notEqual(ra.world.maps.get(11),rb.world.maps.get(11));assert.equal(ra.world.maps.get(11).pvp,false);assert.equal(rb.world.maps.get(11).pvp,true);assert.deepEqual(f.store.states.get('a'),before);
-  assert.ok(!ra.world.snapshot(f.host.getPlayer('a')).players.some(p=>p.id==='b'));assert.ok(f.host.world.maps.get(1).events.size>2);
+  assert.ok(!ra.world.snapshot(f.host.getPlayer('a')).players.some(p=>p.id==='b'));assert.ok(f.host.world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).events.size>2);
   assert.ok(ra.world.content.getMap(11).events.filter(Boolean).every(e=>e.pages.every(p=>!p.list.some(c=>[355,356].includes(c.code)))));
 });
 
@@ -79,14 +112,14 @@ test('a waiting player joins, shared containers grant only once, reusable key op
   await portal(f,a,12);await service(f,a,'container','inn');const key=r.scenario.itemIds.ordinary;assert.equal(qty(a,key),1);await service(f,a,'container','inn');assert.equal(qty(a,key),1);
   await portal(f,a,11);await service(f,a,'ordinaryExit');assert.equal(r.ordinaryExitUnlocked,true);assert.equal(qty(a,key),1);
   await r.world.inventoryAction(a,{action:'drop',kind:'item',itemId:key,quantity:1,requestId:'key-drop'});assert.equal(qty(a,key),0);const droppedKey=[...r.world.maps.get(11).drops.values()].find(d=>d.itemId===key);await r.world.pickup(a,droppedKey.id,'key-reclaim');assert.equal(qty(a,key),1);
-  await service(f,b,'ordinaryExit');assert.equal(f.host.locations.has('b'),false);assert.equal(f.host.getPlayer('b').mapId,1);assert.equal(f.host.locations.get('a'),r);
+  await service(f,b,'ordinaryExit');assert.equal(f.host.locations.has('b'),false);assert.equal(f.host.getPlayer('b').mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.host.locations.get('a'),r);
 });
 
 test('death creates one bag, one claimant receives every stack, and duplicate drop requests do not recreate ground items',async()=>{
   const f=await fixture();let a=await f.connect('a'),b=await f.connect('b');const world=f.host.world;await world.grant(a,'item',7,2);await world.grant(a,'item',13,3);const total=clone(a.inventory);
-  world.damage(a,a.hp);await a._queue;const bag=[...world.maps.get(1).drops.values()][0];assert.equal(world.maps.get(1).drops.size,1);assert.equal(bag.kind,'bag');assert.deepEqual(bag.metadata.items,total);assert.deepEqual(a.inventory,[]);
+  world.damage(a,a.hp);await a._queue;const bag=[...world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).drops.values()][0];assert.equal(world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).drops.size,1);assert.equal(bag.kind,'bag');assert.deepEqual(bag.metadata.items,total);assert.deepEqual(a.inventory,[]);
   await world.pickup(b,bag.id,'bag-once');assert.equal(qty(b,7),2);assert.equal(qty(b,13),3);await world.pickup(b,bag.id,'bag-once');assert.equal(qty(b,7),2);
-  await world.inventoryAction(b,{action:'drop',kind:'item',itemId:7,quantity:1,requestId:'drop-one'});const drop=[...world.maps.get(1).drops.values()][0];await world.pickup(b,drop.id,'pick-one');await world.inventoryAction(b,{action:'drop',kind:'item',itemId:7,quantity:1,requestId:'drop-one'});assert.equal(world.maps.get(1).drops.size,0);assert.equal(qty(b,7),2);
+  await world.inventoryAction(b,{action:'drop',kind:'item',itemId:7,quantity:1,requestId:'drop-one'});const drop=[...world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).drops.values()][0];await world.pickup(b,drop.id,'pick-one');await world.inventoryAction(b,{action:'drop',kind:'item',itemId:7,quantity:1,requestId:'drop-one'});assert.equal(world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).drops.size,0);assert.equal(qty(b,7),2);
   await world.inventoryAction(b,{action:'sort',requestId:'sort-one'});assert.equal(qty(b,13),3);
 });
 
@@ -103,7 +136,7 @@ test('a solo player walks authored portals, suppresses ordinary zones, defeats t
   const boss=r.world.maps.get(22).events.get(r.boss.entityId);assert.equal(boss.hp,350);let swings=0;
   while(!boss.dead&&swings++<30){await walk(f,p,pos=>Math.abs(pos.x-boss.x)+Math.abs(pos.y-boss.y)<=1);p.direction=Math.abs(boss.x-p.x)>Math.abs(boss.y-p.y)?(boss.x>p.x?6:4):(boss.y>p.y?2:8);await f.host.command(p,{type:'attack',skillId:1});await f.advance(500);if(p.hp<200&&!p.dead)await f.host.command(p,{type:'useItem',itemId:7,requestId:`heal-${swings}`});}
   await p._queue;assert.equal(boss.dead,true);assert.equal(p.dead,false);const drop=[...r.world.maps.get(22).drops.values()].find(d=>d.itemId===r.scenario.itemIds.final);assert.ok(drop);await walk(f,p,pos=>Math.abs(pos.x-drop.x)+Math.abs(pos.y-drop.y)<=1);await f.host.command(p,{type:'pickup',entityId:drop.id,requestId:'boss-key'});assert.equal(qty(p,r.scenario.itemIds.final),1);
-  await service(f,p,'finalExit');assert.equal(r.status,'ended');assert.equal(qty(p,r.scenario.itemIds.final),1);assert.equal(f.store.finishes,1);assert.equal(f.host.getPlayer(p.id).mapId,1);assert.equal(f.host.getPlayer(p.id).characterIndex,3);assert.equal(f.host.getPlayer(p.id).appearance.characterIndex,3);
+  await service(f,p,'finalExit');assert.equal(r.status,'ended');assert.equal(qty(p,r.scenario.itemIds.final),1);assert.equal(f.store.finishes,1);assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.host.getPlayer(p.id).characterIndex,3);assert.equal(f.host.getPlayer(p.id).appearance.characterIndex,3);
   await f.host.finishRound(r,{reason:'again'});assert.equal(f.store.finishes,1);assert.ok(f.messages.get(p.id).some(m=>m.type==='instanceResult'&&m.result.outcome==='completed'));
 });
 
@@ -118,7 +151,7 @@ test('a committed settlement retries destination failure without awarding or set
   const f=await fixture(),{p,r}=await start(f);const save=f.store.savePlayer.bind(f.store);let fail=true;
   f.store.savePlayer=async(...args)=>{if(fail){fail=false;throw new Error('destination unavailable');}return save(...args);};
   await assert.rejects(f.host.finishRound(r,{reason:'timeout',success:false}),/destination unavailable/);assert.equal(r.status,'ending');assert.equal(r.world.players.get(p.id),p);assert.equal(f.store.finishes,1);
-  await f.host.finishRound(r,{reason:'timeout',success:false});assert.equal(r.status,'ended');assert.equal(f.host.getPlayer(p.id).mapId,1);assert.equal(f.store.finishes,1);
+  await f.host.finishRound(r,{reason:'timeout',success:false});assert.equal(r.status,'ended');assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.store.finishes,1);
 });
 
 test('old instance requests cannot leave a new round or recreate a round after returning',async()=>{
@@ -141,7 +174,7 @@ test('a lost finish response retries its idempotent commit without saving to the
   const f=await fixture(),{p,r}=await start(f),finish=f.store.finishRound.bind(f.store);let fail=true;
   f.store.finishRound=async(...args)=>{const result=await finish(...args);if(fail){fail=false;throw new Error('finish response lost');}return result;};
   await assert.rejects(f.host.finishRound(r,{reason:'timeout',success:false}),/response lost/);assert.equal(r._settlementFlushed,true);assert.equal(r.result,undefined);assert.equal(r.world.store.closed,true);
-  await f.host.finishRound(r,{reason:'timeout',success:false});assert.equal(f.store.finishes,1);assert.equal(f.host.getPlayer(p.id).mapId,1);assert.equal(f.host.rounds.size,0);assert.equal(r.world.maps.size,0);
+  await f.host.finishRound(r,{reason:'timeout',success:false});assert.equal(f.store.finishes,1);assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.host.rounds.size,0);assert.equal(r.world.maps.size,0);
 });
 
 test('a lost leave response can return the character without saving a closed participant',async()=>{
@@ -149,10 +182,10 @@ test('a lost leave response can return the character without saving a closed par
   f.store.leaveRound=async(...args)=>{const result=await leave(...args);if(fail){fail=false;throw new Error('leave response lost');}return result;};
   r.world.store.savePlayer=async(id,state)=>{if(f.store.rounds.get(r.id).members.get(id)==='left')throw new Error('PARTICIPANT_CLOSED');return save(id,state);};
   await assert.rejects(f.host.command(p,{type:'instance',action:'leave'}),/response lost/);assert.equal(p._departure.flushed,true);await f.advance(1050);await r._queue;
-  assert.equal(f.host.getPlayer(p.id).mapId,1);assert.equal(r.status,'ended');assert.equal(f.host.rounds.size,0);
+  assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(r.status,'ended');assert.equal(f.host.rounds.size,0);
 });
 
 test('all dead players end the round only after their single-bag death transaction finishes',async()=>{
   const f=await fixture(),{p,r}=await start(f);r.world.damage(p,p.hp);await p._queue;assert.equal([...r.world.maps.get(11).drops.values()].filter(d=>d.kind==='bag').length,1);
-  await f.advance(50);await r._queue;assert.equal(r.status,'ended');assert.equal(r.result.reason,'all-dead');assert.equal(r.result.participants[0].outcome,'dead');assert.equal(f.host.getPlayer(p.id).mapId,1);assert.equal(f.host.rounds.size,0);
+  await f.advance(50);await r._queue;assert.equal(r.status,'ended');assert.equal(r.result.reason,'all-dead');assert.equal(r.result.participants[0].outcome,'dead');assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.host.rounds.size,0);
 });

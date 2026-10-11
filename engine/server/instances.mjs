@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
 import {World} from './world.mjs';
-import {Round,ensureGameContent,addService} from './rounds.mjs';
+import {Round,ensureGameContent} from './rounds.mjs';
 import {normalizeOfflineBehavior} from './offline-ai.mjs';
+import {PUBLIC_CITY_SERVICES,bindPublicCityServices,publicCityArrival} from './public-city.mjs';
 
 /** Routes each account to exactly one authoritative world; map ids are local to that world. */
 export class GameHost {
@@ -18,11 +19,7 @@ export class GameHost {
   playerWorld(id){return this.locations.get(id)?.world||this.world;}
   getPlayer(id){return this.playerWorld(id).players.get(id);}
   notice(player,message){if(player)this.playerWorld(player.id).notice(this.getPlayer(player.id)||player,message);}
-  async decorateLobby(map){if(map.id!==1)return;
-    const sys=this.content.database.System,x=sys.startMapId===1?sys.startX:12,y=sys.startMapId===1?sys.startY:6;
-    addService(this.world,map,{id:'instance-guide',name:'远征接引员 · 进入副本',x:x+1,y,service:{kind:'instance'},characterName:'Actor1',characterIndex:5});
-    addService(this.world,map,{id:'appearance-guide',name:'外观调整师',x:x-1,y,service:{kind:'appearance'},characterName:'Actor1',characterIndex:1});
-  }
+  async decorateLobby(map){bindPublicCityServices(map);}
   serviceOpen(player,service='instance'){
     const world=this.playerWorld(player.id);if(service==='appearance'){world.send(player.id,{type:'service',service:'appearance',action:'open'});return;}
     world.send(player.id,{type:'service',service:'instance',action:'open',scenario:this.scenario,instances:[...this.rounds.values()].filter(r=>r.status==='waiting').map(r=>r.snapshot()),modes:['pve','pvpve'],current:this.locations.get(player.id)?.snapshot()||null});
@@ -30,6 +27,7 @@ export class GameHost {
   async connect(account,send){await this.init();if(this.connecting.has(account.id))throw new Error('角色正在连接');this.connecting.add(account.id);
     try{while(this.transitions.has(account.id))await this.transitions.get(account.id).catch(()=>{});const settling=this.locations.get(account.id);if(settling?.status==='ending'){await (settling._finishPromise||this.finishRound(settling,settling.pendingResult));}const existing=this.getPlayer(account.id);if(existing){const p=await this.playerWorld(account.id).reconnect(account.id,send);return p;}
       account=await this.store.loadPlayer(account.id)||account;
+      account={...account,state:publicCityArrival(account.state?.mapId?account.state:this.world.defaultState())};
       const profile=await this.store.loadProfile?.(account.id)||{offlineBehavior:'stay'};
       const player=await this.world.connect(account,send,{announce:false});this.applyProfile(player,profile);this.world.sendSnapshot(player);return player;
     }finally{this.connecting.delete(account.id);}
@@ -37,7 +35,7 @@ export class GameHost {
   applyProfile(player,profile){player.profile=structuredClone(profile);player.appearance=structuredClone(profile.appearance||null);player.offlineBehavior=normalizeOfflineBehavior(profile.offlineBehavior);this.playerWorld(player.id).offlineAI.cancel(player);if(profile.appearance?.characterName){player.characterName=profile.appearance.characterName;player.characterIndex=profile.appearance.characterIndex||0;}}
   async latestProfile(id,fallback={}){try{return await this.store.loadProfile?.(id)||fallback;}catch(error){this._diagnostics.set(`profile:${id}`,error.message);return fallback;}}
   updateProfile(id,profile){const p=this.getPlayer(id);if(p){this.applyProfile(p,profile);this.playerWorld(id).markDirty(p);this.playerWorld(id).sendSnapshot(p);}return p;}
-  assertAtEntrance(player){const guide=this.world.maps.get(1)?.events.get('service:instance-guide');if(player.dead||player._dying||player.mapId!==1||!guide||Math.abs(player.x-guide.x)+Math.abs(player.y-guide.y)>1)throw new Error('请到外部世界的远征接引员旁进入副本');}
+  assertAtEntrance(player){const entrance=PUBLIC_CITY_SERVICES.instance,guide=this.world.maps.get(entrance.mapId)?.events.get(`service:${entrance.id}`);if(player.dead||player._dying||player.mapId!==entrance.mapId||!guide||Math.abs(player.x-guide.x)+Math.abs(player.y-guide.y)>1)throw new Error('请到中央广场的远征接引员旁进入副本');}
   async disconnect(id){if(this.transitions.has(id))await this.transitions.get(id).catch(()=>{});const r=this.locations.get(id);if(r?.status==='ending')await (r._finishPromise||this.finishRound(r,r.pendingResult)).catch(()=>{});return this.playerWorld(id).disconnect(id);}
   exclusive(id,operation){if(this.transitions.has(id))return Promise.reject(new Error('正在切换世界，请稍候'));const work=Promise.resolve().then(operation);this.transitions.set(id,work);return work.finally(()=>{if(this.transitions.get(id)===work)this.transitions.delete(id);});}
   async create(player,mode){if(!['pve','pvpve'].includes(mode))throw new Error('请选择PvE或PvPvE');if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);

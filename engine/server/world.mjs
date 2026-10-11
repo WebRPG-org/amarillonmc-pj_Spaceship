@@ -6,7 +6,7 @@ import {OfflineAI,normalizeOfflineBehavior} from './offline-ai.mjs';
 import {MouseNavigation} from './mouse-navigation.mjs';
 
 export const DIRECTIONS={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
-const persistedKeys=['schemaVersion','mapId','x','y','direction','characterName','characterIndex','hp','maxHp','mp','maxMp','level','exp','gold','inventory','skills','equips','switches','variables','selfSwitches','stats','dead','classId','states','ending','paramPlus'];
+const persistedKeys=['schemaVersion','publicCityVersion','mapId','x','y','direction','characterName','characterIndex','hp','maxHp','mp','maxMp','level','exp','gold','inventory','skills','equips','switches','variables','selfSwitches','stats','dead','classId','states','ending','paramPlus'];
 export const cloneState=p=>structuredClone(Object.fromEntries(persistedKeys.filter(k=>p[k]!==undefined).map(k=>[k,p[k]])));
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
 const finite=(v,fallback=0)=>Number.isFinite(Number(v))?Number(v):fallback;

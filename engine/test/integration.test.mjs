@@ -8,6 +8,7 @@ import mysql from 'mysql2/promise';
 import { WebSocket } from 'ws';
 import { createApplication } from '../server/index.mjs';
 import { MySqlStore } from '../server/persistence.mjs';
+import { PUBLIC_CITY_MAPS, PUBLIC_CITY_SERVICES } from '../server/public-city.mjs';
 
 const enabled = process.env.MYSQL_TEST === '1';
 const self = message => message.players.find(player => player.id === message.playerId);
@@ -82,7 +83,7 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
     assert.notEqual(app.server.address().port, 8098);
     const health = await (await fetch(`${base}/api/health`)).json();
     assert.equal(health.database, 'ready');
-    assert.equal(health.maps, 39);
+    assert.equal(health.maps, 39 + PUBLIC_CITY_MAPS.length);
     const password = 'integration-fixture-password';
     const prefix = `e2e_${randomBytes(5).toString('hex')}`;
     async function session(mode, username) {
@@ -194,9 +195,9 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
       assert.deepEqual(restoredB.self.inventory, []);
     });
 
-    await t.test('all 39 source maps load over HTTP; playable maps transfer and empty maps report no spawn', async () => {
+    await t.test('all source maps load over HTTP; playable maps transfer and empty maps report no spawn', async () => {
       const publicContent = await (await fetch(`${base}/api/content`)).json();
-      assert.equal(publicContent.maps.length, 39);
+      assert.equal(publicContent.maps.length, 39 + PUBLIC_CITY_MAPS.length);
       await Promise.all(publicContent.maps.map(async info => {
         const response = await fetch(`${base}/api/maps/${info.id}`);
         assert.equal(response.status, 200, `Map ${info.id} must load.`);
@@ -220,8 +221,8 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
           noSpawn++;
         }
       }
-      assert.equal(transferred + noSpawn, 39);
-      t.diagnostic(`All 39 map JSON files loaded; ${transferred} maps accepted server transfer; ${noSpawn} maps correctly reported no walkable spawn.`);
+      assert.equal(transferred + noSpawn, 39 + PUBLIC_CITY_MAPS.length);
+      t.diagnostic(`All ${publicContent.maps.length} map JSON files loaded; ${transferred} maps accepted server transfer; ${noSpawn} maps correctly reported no walkable spawn.`);
       assert.ok(!app.world.runtimeDiagnostics.has('tick'), 'World loop must not throw while visiting maps.');
     });
 
@@ -258,10 +259,11 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
 
       // Place the fixture at the actual outside-world NPC, then use only the public protocol.
       const original = app.host.getPlayer(attackerAccount.playerId);
-      await app.world.transfer(original, 1, 13, 6);
+      const entrance = PUBLIC_CITY_SERVICES.instance;
+      await app.world.transfer(original, entrance.mapId, entrance.x, entrance.y + 1);
       const outside = await store.loadPlayer(original.id);
       after = attacker.messages.length;
-      attacker.send({type:'navigate',x:14,y:6,targetId:'service:instance-guide',contextInstanceId:null,requestId:randomUUID()});
+      attacker.send({type:'navigate',x:entrance.x,y:entrance.y,targetId:'service:instance-guide',contextInstanceId:null,requestId:randomUUID()});
       await attacker.wait(m => m.type === 'service' && m.service === 'instance', after);
       attacker.send({type:'instance',action:'create',mode:'pve',contextInstanceId:null});
       const joined = await attacker.snapshot(s => s.instance?.status === 'waiting' && !!s.self.profile?.appearance, after);
@@ -289,7 +291,7 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
       assert.equal((await store.loadProfile(original.id)).appearance.characterName, actor.characterName);
       assert.equal((await store.loadProfile(original.id)).offlineBehavior, 'evade');
       attacker.send({type:'instance',action:'leave',contextInstanceId:instanceId});
-      const returned = await attacker.snapshot(s => !s.instance && s.mapId === 1 && s.self.profile?.appearance?.actorId === actor.id, after);
+      const returned = await attacker.snapshot(s => !s.instance && s.mapId === entrance.mapId && s.self.profile?.appearance?.actorId === actor.id, after);
       assert.equal(returned.self.profile.appearance.actorId,actor.id);
       assert.equal(quantity(returned,'item',1),3);
       assert.equal(returned.self.gold,outside.state.gold);

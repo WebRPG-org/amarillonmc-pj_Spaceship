@@ -1,0 +1,105 @@
+{
+  "resourceRoot": "D:/Resources",
+  "tilesets": [
+    {
+      "id": 39,
+      "packId": "P67086633a25e",
+      "name": "Public City / Living Good City",
+      "base": "MZDLC/SERIALGAMES Living Good City Tileset",
+      "sample": "sample project_en/data",
+      "assets": [
+        {
+          "slot": 0,
+          "source": "MZDLC/SERIALGAMES Living Good City Tileset/tileset/livecity_A1_noon.png",
+          "target": "img/tilesets/CITY_livecity_A1_noon.png"
+        },
+        {
+          "slot": 1,
+          "source": "MZDLC/SERIALGAMES Living Good City Tileset/tileset/livecity_A2_noon.png",
+          "target": "img/tilesets/CITY_livecity_A2_noon.png"
+        },
+        {
+          "slot": 3,
+          "source": "MZDLC/SERIALGAMES Living Good City Tileset/tileset/livecity_A4_noon.png",
+          "target": "img/tilesets/CITY_livecity_A4_noon.png"
+        },
+        {
+          "slot": 4,
+          "source": "MZDLC/SERIALGAMES Living Good City Tileset/tileset/livecity_A5_noon.png",
+          "target": "img/tilesets/CITY_livecity_A5_noon.png"
+        },
+        {
+          "slot": 5,
+          "source": "MZDLC/SERIALGAMES Living Good City Tileset/tileset/livecity_B_noon.png",
+          "target": "img/tilesets/CITY_livecity_B_noon.png"
+        }
+      ],
+      "sourceId": 7,
+      "credit": "(C) 2022 SERIALGAMES Inc.",
+      "creditSource": "readme.pdf",
+      "engineScope": "Source EULA names RPG Maker MV/MZ and other RPG Maker series entries; no broader custom-engine license is asserted here.",
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 6079,
+          "reason": "Solid building roof / cutaway boundary, inaccessible in public city"
+        }
+      ]
+    },
+    {
+      "id": 40,
+      "packId": "P8633265806b8",
+      "name": "Public City / Modern JP Interiors",
+      "base": "MVDLC/DorapixelMapChips - Modern JP Interiors",
+      "sample": "Samplemap/MV/samplemap_en/data",
+      "assets": [
+        {
+          "slot": 1,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_A2.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_A4.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_A4.png"
+        },
+        {
+          "slot": 4,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_A5_1.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_A5_1.png"
+        },
+        {
+          "slot": 5,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_B.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_B.png"
+        },
+        {
+          "slot": 6,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_C.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_C.png"
+        },
+        {
+          "slot": 7,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_D.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_D.png"
+        },
+        {
+          "slot": 8,
+          "source": "MVDLC/DorapixelMapChips - Modern JP Interiors/tilesets/drpk_pixeltiles_in_01_E.png",
+          "target": "img/tilesets/CITY_drpk_pixeltiles_in_01_E.png"
+        }
+      ],
+      "sourceId": 1,
+      "credit": "(C) 2021 Pika's Game",
+      "creditSource": "readme.pdf",
+      "engineScope": "Source EULA names RPG Maker MV/MZ and other RPG Maker series entries; no broader custom-engine license is asserted here.",
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Solid building roof / cutaway boundary, inaccessible in public city"
+        }
+      ]
+    }
+  ]
+}
