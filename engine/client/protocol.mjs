@@ -7,3 +7,9 @@ export function zoneView(zone, serverTime) {
   const target = active ? zone.endsAt : zone.startsAt;
   return { visible: true, active, seconds: Number.isFinite(target) ? Math.max(0, Math.ceil((target - serverTime) / 1000)) : null };
 }
+
+// Map numbers repeat between isolated instances; rendering identity includes both.
+export function sceneKey(snapshot) { return JSON.stringify([snapshot?.instance?.id || null, snapshot?.mapId ?? null]); }
+export function withCommandContext(message, snapshot) {
+  return message.type === 'appearance' ? { ...message } : { ...message, contextInstanceId: snapshot?.instance?.id || null };
+}

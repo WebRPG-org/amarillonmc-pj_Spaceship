@@ -1,9 +1,13 @@
 import { Renderer, assetUrl } from './renderer.mjs';
 import { snapshotPreview } from './tile-format.mjs';
-import { zoneView } from './protocol.mjs';
+import { zoneView, withCommandContext } from './protocol.mjs';
+import { AppearanceEditor } from './appearance.mjs';
+import { PointerGesture, pointerCommand, weaponDetails } from './pointer.mjs';
 
 const $ = id => document.getElementById(id);
 const renderer = new Renderer($('world'));
+renderer.portraitCanvas = $('player-portrait');
+const pointer = new PointerGesture();
 const state = { content: null, snapshot: null, mapId: null, preview: true, socket: null,
   token: sessionStorage.getItem('spaceship-token'), maps: new Map(), seq: 0, panel: null,
   reconnect: 0, reconnectTimer: null, sound: false, bgm: null, loading: 0, sessionGeneration: 0, ready: false, keys: new Set(), pendingDialogue: null };
@@ -30,7 +34,7 @@ async function fetchJson(url, options) {
 function send(message) {
   if (state.preview) { notice('当前为内容预览。登录后可测试联网玩法。'); return false; }
   if (!state.ready || state.socket?.readyState !== WebSocket.OPEN) { notice('世界状态尚未同步，操作未发送。', 'error'); return false; }
-  state.socket.send(JSON.stringify(message)); return true;
+  state.socket.send(JSON.stringify(withCommandContext(message, state.snapshot))); return true;
 }
 
 async function loadMap(id, preview = state.preview) {
@@ -87,6 +91,8 @@ async function connect() {
   // Validate explicitly so an expired or lost token does not retry forever.
   try {
     const response = await fetch('/api/session', { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(8000) });
+    // Finish the body too, so the timeout cannot abort an otherwise successful probe.
+    await response.text();
     if (state.token !== token || generation !== state.sessionGeneration) return;
     if (response.status === 401) { logout(); $('login-error').textContent = '登录已失效或服务已重启，请重新登录。'; return; }
     if (!response.ok) throw new Error(response.status === 503 ? '数据库暂不可用' : `服务暂不可用（${response.status}）`);
@@ -103,7 +109,10 @@ async function connect() {
     try { message = JSON.parse(event.data); } catch { notice('收到无法读取的服务器消息。', 'error'); return; }
     if (message.type === 'snapshot') {
       if (!state.ready) { state.ready = true; state.reconnect = 0; setConnection('世界已连接', true); }
+      const changedWorld = (state.snapshot?.instance?.id || null) !== (message.instance?.id || null);
+      if (changedWorld) { state.keys.clear(); pointer.cancel(); closeDialogue(); renderer.resetPresentation(); renderer.entities.clear(); }
       const changed = state.snapshot?.mapId !== message.mapId;
+      if (changed) pointer.cancel();
       state.snapshot = message;
       if (changed || state.mapId !== message.mapId) {
         if (state.requestedMap !== message.mapId) { state.requestedMap = message.mapId; loadMap(message.mapId, false).finally(() => { if (state.requestedMap === message.mapId) state.requestedMap = null; }); }
@@ -114,11 +123,13 @@ async function connect() {
     else if (message.type === 'audio') playAudio(message.kind, message.audio);
     else if (message.type === 'eventEffect') eventEffect(message);
     else if (message.type === 'openCrafting') openPanel('craft');
+    else if (message.type === 'service') receiveService(message);
+    else if (message.type === 'instanceResult') { state.instanceResult = message.result; openPanel('result'); }
     else if (message.type === 'notice' || message.type === 'error') notice(message.message || message.error || '服务器通知', message.level || (message.type === 'error' ? 'error' : 'info'));
   };
   ws.onclose = event => {
     if (state.socket !== ws || state.preview || !state.token) return;
-    setConnection('连接已中断'); state.keys.clear(); state.ready = false; closeDialogue();
+    setConnection('连接已中断'); state.keys.clear(); pointer.cancel(); state.ready = false; closeDialogue();
     if ([1008, 4001, 4003, 4401].includes(event.code)) { logout(); $('login-error').textContent = '登录已失效，请重新登录。'; return; }
     scheduleReconnect();
   };
@@ -141,6 +152,7 @@ function logout() {
   sessionStorage.removeItem('spaceship-token'); const socket = state.socket; state.socket = null; socket?.close();
   $('welcome').hidden = false; $('player-hud').hidden = $('death-overlay').hidden = $('dev-section').hidden = true;
   $('logout-button').hidden = true; closePanel(); closeDialogue(); setConnection('未连接');
+  state.instanceService = null; state.instanceResult = null;
   renderer.resetPresentation(); updateHud();
   if (state.mapId) loadMap(state.mapId, true);
 }
@@ -151,9 +163,15 @@ function me() { return state.snapshot?.players?.find(p => p.id === state.snapsho
 
 function updateHud() {
   const player = me(), self = state.snapshot?.self || {};
+  updateInstanceHud();
   $('player-hud').hidden = !player; $('death-overlay').hidden = !player?.dead;
-  $('dev-section').hidden = !state.snapshot?.devTools || state.preview;
-  $('travel-button').disabled = !state.preview && !state.snapshot?.devTools;
+  $('dev-section').hidden = !state.snapshot?.devTools || state.preview || Boolean(state.snapshot?.instance);
+  $('respawn-button').textContent = state.snapshot?.instance ? '结束行动并返回世界' : '返回重生点';
+  $('travel-button').disabled = !state.preview && (!state.snapshot?.devTools || Boolean(state.snapshot?.instance));
+  const behavior = self.offlineBehavior || self.profile?.offlineBehavior || 'stay';
+  $('offline-behavior').disabled = state.preview || !state.ready;
+  if (document.activeElement !== $('offline-behavior')) $('offline-behavior').value = behavior;
+  $('offline-policy').textContent = {stay:'原地停留，仍会受到伤害。',evade:'远离附近威胁，优先离开禁区。',search:'搜寻附近物资；遇到危险先躲避。',hunt:'主动追击可见敌对目标，仍消耗弹药、耐久与 MP。'}[behavior] || '';
   const zone = zoneView(state.snapshot?.zone, state.snapshot?.serverTime);
   $('zone-badge').hidden = !zone.visible;
   if (zone.visible) {
@@ -174,8 +192,10 @@ function updateHud() {
     for (const id of self.skills || []) { const skill = state.content.database.Skills?.[id]; if (skill) $('skill-select').add(new Option(`${skill.name} · MP ${skill.mpCost || 0}`, String(id))); }
     if ([...$('skill-select').options].some(o => o.value === selected)) $('skill-select').value = selected;
   }
-  $('equipment-summary').textContent = `武器：${self.equips?.weapon ? itemName('weapon', self.equips.weapon) : '未装备'}\n防具：${self.equips?.armor ? itemName('armor', self.equips.armor) : '未装备'} · 金币 ${self.gold || 0}`;
-  const signature = JSON.stringify([self.inventory, self.equips, self.gold]);
+  const equippedWeapon = self.inventory?.find(i => i.kind === 'weapon' && (self.equips?.weaponInstanceId ? i.instanceId === self.equips.weaponInstanceId : i.itemId === self.equips?.weapon));
+  const weaponInfo = weaponDetails(equippedWeapon, state.content.weaponProfiles?.[self.equips?.weapon], self.inventory, id => itemName('item', id));
+  $('equipment-summary').textContent = `武器：${self.equips?.weapon ? itemName('weapon', self.equips.weapon) : '未装备'}${weaponInfo ? `\n${weaponInfo}` : ''}\n防具：${self.equips?.armor ? itemName('armor', self.equips.armor) : '未装备'} · 金币 ${self.gold || 0}`;
+  const signature = JSON.stringify([self.inventory, self.equips, self.gold, state.snapshot?.drops, player?.x, player?.y]);
   if (signature !== state.inventorySignature) {
     state.inventorySignature = signature;
     if (state.panel === 'inventory') renderInventory();
@@ -184,14 +204,16 @@ function updateHud() {
 }
 
 function openPanel(kind) {
+  state.appearanceEditor?.dispose(); state.appearanceEditor = null;
   if (!state.content) { notice('内容仍在载入，请稍候。'); return; }
-  state.panel = kind; state.keys.clear(); $('panel-overlay').hidden = false;
-  $('panel-title').textContent = { inventory: '随身背包', craft: '合成工作台', report: '内容兼容报告' }[kind];
-  $('panel-eyebrow').textContent = { inventory: 'FIELD KIT', craft: 'CRAFTING', report: 'CONTENT INSPECTOR' }[kind];
+  cancelNavigation(); state.panel = kind; state.keys.clear(); $('panel-overlay').hidden = false;
+  $('panel-title').textContent = { inventory: '随身背包', craft: '合成工作台', report: '内容兼容报告', appearance: '角色外观', instance: '副本大厅', result: '行动结算' }[kind];
+  $('panel-eyebrow').textContent = { inventory: 'FIELD KIT', craft: 'CRAFTING', report: 'CONTENT INSPECTOR', appearance: 'CHARACTER CREATOR', instance: 'EXPEDITION', result: 'MISSION REPORT' }[kind];
   $('close-panel').focus();
   if (kind === 'inventory') renderInventory(); if (kind === 'craft') renderCraft(); if (kind === 'report') renderReport();
+  if (kind === 'appearance') renderAppearance(); if (kind === 'instance') renderInstance(); if (kind === 'result') renderInstanceResult();
 }
-function closePanel() { state.panel = null; $('panel-overlay').hidden = true; $('world').focus(); }
+function closePanel() { state.appearanceEditor?.dispose(); state.appearanceEditor = null; state.panel = null; $('panel-overlay').hidden = true; $('world').focus(); }
 function iconFor(item) {
   const icon = node('span', 'item-icon'); const index = item?.iconIndex || 0;
   icon.style.backgroundPosition = `-${index % 16 * 32}px -${Math.floor(index / 16) * 32}px`; return icon;
@@ -201,26 +223,35 @@ function renderInventory() {
   const root = $('panel-content'); root.replaceChildren();
   if (state.preview) { root.append(node('p', 'empty-state', '内容预览不包含角色背包。登录进入世界后可拾取、装备和使用物品。')); return; }
   const self = state.snapshot?.self || {}, inventory = self.inventory || [];
-  root.append(node('p', '', `持有金币：${self.gold || 0} G · ${inventory.length} 种物品`));
+  const toolbar=node('div','inventory-toolbar'),sort=node('button','secondary','整理背包'); sort.onclick=()=>send({type:'inventory',action:'sort'}); toolbar.append(node('p','',`持有金币：${self.gold || 0} G · ${inventory.length} 种物品`),sort); root.append(toolbar);
   if (!inventory.length) root.append(node('p', 'empty-state', '背包是空的。靠近掉落物按 E 拾取，或使用开发测试物品。'));
   for (const entry of inventory) {
     const data = itemData(entry.kind, entry.itemId), row = node('div', 'item-row'), description = node('div', 'item-description');
     description.append(node('strong', '', data?.name || itemName(entry.kind, entry.itemId)), node('span', 'quantity', ` ×${entry.quantity}`), node('p', '', cleanText(data?.description || '')));
+    if (entry.kind === 'weapon') {
+      const detail = weaponDetails(entry, state.content.weaponProfiles?.[entry.itemId], inventory, id => itemName('item', id));
+      if (detail) description.append(node('p', 'weapon-details', detail));
+    }
     row.append(iconFor(data), description);
     const equipment = entry.kind === 'weapon' || entry.kind === 'armor';
-    const equipped = self.equips?.[entry.kind] === entry.itemId;
+    const equipped = self.equips?.[entry.kind] === entry.itemId && (entry.kind !== 'weapon' || !self.equips.weaponInstanceId || self.equips.weaponInstanceId === entry.instanceId);
     if (equipment || data?.consumable || data?.effects?.length) {
       const button = node('button', '', equipment ? equipped ? '已装备' : '装备' : '使用'); button.disabled = equipped;
-      button.onclick = () => send(equipment ? { type: 'equip', kind: entry.kind, itemId: entry.itemId } : { type: 'useItem', itemId: entry.itemId, requestId: requestId() }); row.append(button);
+      button.onclick = () => send(equipment ? { type: 'equip', kind: entry.kind, itemId: entry.itemId, ...(entry.instanceId ? {instanceId: entry.instanceId} : {}) } : { type: 'useItem', itemId: entry.itemId, requestId: requestId() }); row.append(button);
     }
-    root.append(row);
+    const dropControls=node('div','inventory-drop-controls'),quantity=node('input'),dropButton=node('button','secondary','丢弃');
+    quantity.type='number';quantity.min='1';quantity.max=String(entry.quantity);quantity.step='1';quantity.value='1';quantity.setAttribute('aria-label',`丢弃${data?.name||entry.kind}的数量`);
+    dropButton.onclick=()=>{const count=Number(quantity.value);if(!Number.isInteger(count)||count<1||count>entry.quantity){notice('请输入背包数量范围内的整数。','error');return;}send({type:'inventory',action:'drop',kind:entry.kind,itemId:entry.itemId,...(entry.instanceId?{instanceId:entry.instanceId}:{}),quantity:count,requestId:requestId()});};
+    dropControls.append(quantity,dropButton);row.append(dropControls);root.append(row);
   }
   const player = me();
   if (player) {
     const nearby = (state.snapshot.drops || []).filter(d => Math.hypot(d.x - player.x, d.y - player.y) <= 2);
     if (nearby.length) root.append(node('h3', 'report-section-title', '附近掉落'));
     for (const drop of nearby) {
-      const row = node('div', 'item-row'), text = node('div', 'item-description', `${itemName(drop.kind, drop.itemId)} ×${drop.quantity}`), button = node('button', '', '拾取');
+      const row = node('div', 'item-row'), text = node('div', 'item-description'), button = node('button', '', drop.kind==='bag'?'整包拾取':'拾取');
+      text.append(node('strong','',drop.kind==='bag'?`${drop.metadata?.ownerName||'探索者'}的遗落背包`:`${itemName(drop.kind, drop.itemId)} ×${drop.quantity}`));
+      if(drop.kind==='bag') text.append(node('p','',(drop.metadata?.items||[]).map(i=>`${itemName(i.kind,i.itemId)} ×${i.quantity}`).join('、')||'空背包'));
       button.onclick = () => send({ type: 'pickup', entityId: drop.id, requestId: requestId() }); row.append(text, button); root.append(row);
     }
   }
@@ -245,7 +276,7 @@ function renderReport() {
     const stat = node('div', 'report-stat'); stat.append(node('strong', '', String(number)), node('span', '', title)); stats.append(stat);
   }
   root.append(stats, node('p', '', '使用新的地图渲染、客户端与服务端；未加载原 RPG Maker 运行时或旧插件。内容可读取不代表所有插件行为均已实现。'));
-  root.append(node('h3', 'report-section-title', '渲染支持'), node('p', '', 'MV/MZ 标准 48 px 图块：A1 水面与瀑布动画、A2 地板与桌沿、A3/A4 墙面、A5 与 B–E 普通图块、四层地图、阴影、星标遮挡、区域 ID、$ / ! 人物切片、MV 帧动画。MZ Effekseer 特效与插件专用素材布局尚未适配。'));
+  root.append(node('h3', 'report-section-title', '渲染支持'), node('p', '', 'MV/MZ 标准 48 px 图块：A1 水面与瀑布动画、A2 地板与桌沿、A3/A4 墙面、A5 与 B–E 普通图块、四层地图、阴影、星标遮挡、区域 ID、$ / ! 人物切片、MV 帧动画与 MZ Effekseer 特效。插件专用素材布局仍需单独适配。'));
   if (renderer.images.missing.size) root.append(node('h3', 'report-section-title', '本次预览资源缺失'), node('pre', 'report-pre', [...renderer.images.missing].join('\n')));
   if (state.unhandledEffects?.size) root.append(node('h3', 'report-section-title', '未适配的事件表现命令'), node('pre', 'report-pre', [...state.unhandledEffects].join(', ')));
   root.append(node('h3', 'report-section-title', '导入器检查结果'), node('pre', 'report-pre', JSON.stringify(coverage, null, 2)));
@@ -255,7 +286,7 @@ function renderReport() {
 function closeDialogue() { state.pendingDialogue = null; $('dialogue').hidden = true; }
 function showDialogue(message) {
   if (message.close) { closeDialogue(); return; }
-  state.pendingDialogue = message; state.keys.clear(); $('dialogue').hidden = false;
+  cancelNavigation(); state.pendingDialogue = message; state.keys.clear(); $('dialogue').hidden = false;
   $('dialogue-speaker').textContent = message.speaker || '事件'; $('dialogue-text').textContent = cleanText(Array.isArray(message.text) ? message.text.join('\n') : message.text);
   const choices = $('dialogue-choices'); choices.replaceChildren();
   const options = message.choices?.length ? message.choices : ['继续'];
@@ -264,12 +295,16 @@ function showDialogue(message) {
   }; choices.append(button); });
 }
 
-function attack() { const id = Number($('skill-select').value); send({ type: 'attack', ...(id > 0 ? { skillId: id } : {}) }); }
+function attack() { cancelNavigation(); const id = Number($('skill-select').value); send({ type: 'attack', requestId: requestId(), ...(id > 0 ? { skillId: id } : {}) }); }
 function interact() {
-  const player = me();
-  const near = player && [...(state.snapshot.drops || [])].sort((a, b) => Math.hypot(a.x - player.x, a.y - player.y) - Math.hypot(b.x - player.x, b.y - player.y))[0];
-  if (near && Math.hypot(near.x - player.x, near.y - player.y) <= 1.5) send({ type: 'pickup', entityId: near.id, requestId: requestId() });
-  else send({ type: 'interact' });
+  cancelNavigation();
+  const player = me(); if (!player) { send({type:'interact'}); return; }
+  const delta={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]}[player.direction]||[0,1];
+  const facing=state.snapshot.events?.find(e=>!e.erased&&!e.enemyId&&e.x===player.x+delta[0]&&e.y===player.y+delta[1]);
+  if(facing){send({type:'interact',targetId:facing.id});return;}
+  const distance=d=>Math.abs(d.x-player.x)+Math.abs(d.y-player.y);
+  const near=[...(state.snapshot.drops||[])].filter(d=>distance(d)<=1.5).sort((a,b)=>distance(a)-distance(b))[0];
+  if(near)send({type:'pickup',entityId:near.id,requestId:requestId()});else send({type:'interact'});
 }
 
 function playAudio(kind, data) {
@@ -317,6 +352,7 @@ $('preview-button').onclick = async () => {
 };
 $('logout-button').onclick = logout;
 $('attack-button').onclick = attack; $('interact-button').onclick = interact;
+$('instance-button').onclick = () => openPanel('instance');
 $('inventory-button').onclick = () => openPanel('inventory'); $('craft-button').onclick = () => openPanel('craft');
 $('report-button').onclick = () => openPanel('report'); $('close-panel').onclick = closePanel;
 $('panel-overlay').onclick = event => { if (event.target === $('panel-overlay')) closePanel(); };
@@ -327,7 +363,7 @@ $('travel-button').onclick = () => {
 $('grid-toggle').onchange = event => { renderer.showGrid = event.target.checked; };
 $('region-toggle').onchange = event => { renderer.showRegions = event.target.checked; };
 for (const button of document.querySelectorAll('[data-dev]')) button.onclick = () => send({ type: 'dev', action: button.dataset.dev });
-$('respawn-button').onclick = () => send({ type: 'respawn' });
+$('respawn-button').onclick = () => send(state.snapshot?.instance ? { type: 'instance', action: 'leave' } : { type: 'respawn' });
 function zoom(value) { renderer.zoom = Math.min(2, Math.max(.5, value)); $('zoom-label').textContent = `${Math.round(renderer.zoom * 100)}%`; }
 $('zoom-out').onclick = () => zoom(renderer.zoom - .25); $('zoom-in').onclick = () => zoom(renderer.zoom + .25);
 $('sound-button').onclick = () => {
@@ -335,26 +371,96 @@ $('sound-button').onclick = () => {
   if (!state.sound) { state.bgm?.pause(); state.bgs?.pause(); }
   else if (renderer.map?.autoplayBgm) playAudio('bgm', renderer.map.bgm);
 };
-$('world').addEventListener('click', event => {
-  $('world').focus(); if (state.preview) return;
-  const p = renderer.screenToMap(event.clientX, event.clientY);
-  const drop = state.snapshot?.drops?.find(d => Math.hypot(d.x + .5 - p.x, d.y + .5 - p.y) < .65);
-  if (drop) send({ type: 'pickup', entityId: drop.id, requestId: requestId() });
+$('offline-behavior').onchange = event => send({type: 'offlineBehavior', behavior: event.target.value});
+$('world').addEventListener('effectaudio', event => playAudio('se', event.detail));
+function cancelNavigation() {
+  pointer.cancel(); state.lastPointerCommand = null;
+  if (!state.preview && state.ready && state.socket?.readyState === WebSocket.OPEN) send({type: 'navigate', cancel: true});
+}
+function cancelOrMenu() {
+  cancelNavigation(); state.keys.clear();
+  if (state.pendingDialogue) {
+    // The event interpreter decides whether this choice allows cancellation.
+    if (state.pendingDialogue.choices?.length) send({type: 'dialogue', choice: -1});
+  } else if (state.panel) closePanel();
+  else if ($('welcome').hidden) openPanel('inventory');
+}
+function navigatePointer(clientX, clientY, {held = false} = {}) {
+  if (state.panel || !$('welcome').hidden || !renderer.map) return;
+  if (state.pendingDialogue) {
+    if (!held && !state.pendingDialogue.choices?.length) $('dialogue-choices').firstElementChild?.click();
+    return;
+  }
+  const point = renderer.screenToMap(clientX, clientY);
+  if (point.x < 0 || point.y < 0 || point.x >= renderer.map.width || point.y >= renderer.map.height) return;
+  if (state.preview) {renderer.viewCenter = {x: point.x - .5, y: point.y - .5}; return;}
+  if (!state.ready || me()?.dead) return;
+  const message = pointerCommand(point, state.snapshot, {skillId: Number($('skill-select').value), requestId: requestId()});
+  const signature = JSON.stringify({...message, requestId: null});
+  if (held && signature === state.lastPointerCommand) return;
+  state.lastPointerCommand = signature; state.keys.clear();
+  if (send(message)) {
+    const marker = $('destination-marker');
+    marker.dataset.x = String(message.x); marker.dataset.y = String(message.y);
+    marker.hidden = false; marker.classList.toggle('attack-target', !!(message.targetPlayerId || state.snapshot.events?.find(e => e.id === message.targetId && e.enemyId)));
+    state.markerUntil = performance.now() + 1800;
+  }
+}
+const canvas = $('world');
+canvas.addEventListener('pointerdown', event => {
+  if (event.button !== 0 && event.button !== 2) return;
+  event.preventDefault(); canvas.focus();
+  const result = pointer.down(event);
+  if (result?.kind === 'cancel') {const blocked = pointer.blocked; cancelOrMenu(); if (blocked) pointer.blocked = true; return;}
+  canvas.setPointerCapture?.(event.pointerId); state.pointerHeldAt = performance.now();
 });
+canvas.addEventListener('pointermove', event => pointer.move(event));
+canvas.addEventListener('pointerup', event => {
+  const result = pointer.up(event);
+  if (result?.kind === 'navigate') navigatePointer(result.x, result.y);
+  if (canvas.hasPointerCapture?.(event.pointerId)) canvas.releasePointerCapture(event.pointerId);
+});
+canvas.addEventListener('pointercancel', () => cancelNavigation());
+canvas.addEventListener('contextmenu', event => event.preventDefault());
+$('panel-overlay').addEventListener('contextmenu', event => {event.preventDefault(); cancelOrMenu();});
+const panelTouches = new Set();
+$('panel-overlay').addEventListener('pointerdown', event => {
+  if (event.pointerType !== 'touch') return;
+  panelTouches.add(event.pointerId);
+  if (panelTouches.size > 1) {event.preventDefault(); panelTouches.clear(); cancelOrMenu();}
+});
+window.addEventListener('pointerup', event => panelTouches.delete(event.pointerId));
+window.addEventListener('pointercancel', event => panelTouches.delete(event.pointerId));
+setInterval(() => {
+  const held = pointer.held();
+  if (held && performance.now() - state.pointerHeldAt > 180) navigatePointer(held.x, held.y, {held: true});
+}, 200);
+function drawDestinationMarker() {
+  const marker = $('destination-marker'), nav = state.snapshot?.self?.navigation;
+  if (nav && !state.panel && !state.preview) {marker.dataset.x = String(nav.x); marker.dataset.y = String(nav.y); marker.hidden = false;}
+  else if (performance.now() > (state.markerUntil || 0)) marker.hidden = true;
+  if (!marker.hidden) {
+    marker.style.left = `${(Number(marker.dataset.x) + .5 - renderer.camera.x) * 48 * renderer.zoom}px`;
+    marker.style.top = `${(Number(marker.dataset.y) + .5 - renderer.camera.y) * 48 * renderer.zoom}px`;
+  }
+  requestAnimationFrame(drawDestinationMarker);
+}
+requestAnimationFrame(drawDestinationMarker);
 const directions = { KeyW: 8, ArrowUp: 8, KeyS: 2, ArrowDown: 2, KeyA: 4, ArrowLeft: 4, KeyD: 6, ArrowRight: 6 };
 window.addEventListener('keydown', event => {
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(event.target.tagName) || !$('welcome').hidden) return;
-  if (event.code === 'Escape') { closePanel(); state.keys.clear(); return; }
+  if (event.target.tagName === 'BUTTON' && ['Space','Enter'].includes(event.code)) return;
+  if (event.code === 'Escape') { event.preventDefault(); if (!event.repeat) cancelOrMenu(); return; }
   if (event.code === 'Tab') { event.preventDefault(); if (state.panel) closePanel(); else openPanel('inventory'); return; }
   if (state.panel) return;
   if (state.pendingDialogue) { if ((event.code === 'Enter' || event.code === 'KeyE') && !event.repeat && !state.pendingDialogue.choices?.length) $('dialogue-choices').firstElementChild?.click(); return; }
-  if (directions[event.code]) { event.preventDefault(); state.keys.delete(event.code); state.keys.add(event.code); if(!event.repeat)moveFromKeyboard(); }
+  if (directions[event.code]) { event.preventDefault(); if(!event.repeat)cancelNavigation(); state.keys.delete(event.code); state.keys.add(event.code); if(!event.repeat)moveFromKeyboard(); }
   if ((event.code === 'KeyJ' || event.code === 'Space') && !event.repeat) { event.preventDefault(); attack(); }
   if (event.code === 'KeyE' && !event.repeat) { event.preventDefault(); interact(); }
 });
 window.addEventListener('keyup', event => state.keys.delete(event.code));
-window.addEventListener('blur', () => state.keys.clear());
-document.addEventListener('visibilitychange', () => state.keys.clear());
+window.addEventListener('blur', () => {state.keys.clear(); cancelNavigation();});
+document.addEventListener('visibilitychange', () => {state.keys.clear(); if(document.hidden)cancelNavigation();});
 function moveFromKeyboard() {
   if (state.panel || state.pendingDialogue || !$('welcome').hidden) return;
   const key = [...state.keys].at(-1), direction = directions[key]; if (!direction) return;
@@ -368,6 +474,7 @@ setInterval(moveFromKeyboard, 150);
 async function initialize() {
   try {
     state.content = await fetchJson('/api/content');
+    loadAppearanceCatalog().catch(() => {});
     $('map-select').replaceChildren(...state.content.maps.map(m => new Option(`${String(m.id).padStart(3, '0')} · ${m.name}`, String(m.id))));
     $('map-count').textContent = `${state.content.maps.length} 张`;
     const initial = state.content.database.System?.startMapId || state.content.maps[0]?.id;
@@ -381,3 +488,83 @@ async function initialize() {
   }
 }
 initialize();
+
+async function loadAppearanceCatalog() {
+  if (state.appearanceCatalog) return state.appearanceCatalog;
+  if (!state.appearanceLoading) state.appearanceLoading = fetchJson('/api/appearance').then(catalog => {
+    state.appearanceCatalog = catalog; renderer.appearances.setCatalog(catalog); return catalog;
+  }).finally(() => { state.appearanceLoading = null; });
+  return state.appearanceLoading;
+}
+async function renderAppearance() {
+  const root = $('panel-content'); root.replaceChildren(node('p','empty-state','正在读取角色创建素材…'));
+  try {
+    const catalog = await loadAppearanceCatalog(); if (state.panel !== 'appearance') return;
+    const current = me()?.appearance || state.snapshot?.self?.appearance || catalog.creator.defaults;
+    state.appearanceEditor = new AppearanceEditor({ root, catalog, composer: renderer.appearances, current,
+      onSave: appearance => send({ type: 'appearance', appearance }) });
+  } catch (error) { if (state.panel === 'appearance') root.replaceChildren(node('p','empty-state',`外观素材暂不可用：${error.message}`)); }
+}
+function receiveService(message) {
+  if (message.service === 'appearance') openPanel('appearance');
+  else if (message.service === 'instance') { state.instanceService = message; openPanel('instance'); }
+}
+const phaseNames = { waiting:'等待队伍准备',exploration:'探索与寻物',boss:'禁区推进 · Boss阶段',completed:'本局已结束' };
+const modeName = mode => mode === 'pvpve' ? 'PvPvE · 竞争生存' : 'PvE · 合作探索';
+const countdown = seconds => Number.isFinite(seconds) ? `${String(Math.floor(Math.max(0,seconds)/60)).padStart(2,'0')}:${String(Math.floor(Math.max(0,seconds)%60)).padStart(2,'0')}` : '--:--';
+function keyCount(id) { return (state.snapshot?.self?.inventory || []).filter(i => i.kind === 'item' && i.itemId === id).reduce((n,i) => n+i.quantity,0); }
+function instanceKeys(instance) { const ids=instance?.keyItems || state.instanceService?.scenario?.itemIds || {}; return {ordinary:keyCount(ids.ordinary),final:keyCount(ids.final),control:keyCount(ids.control)}; }
+function updateInstanceHud() {
+  const instance = state.snapshot?.instance;
+  $('instance-section').hidden = !instance; $('world-services').hidden = !!instance;
+  if (!instance) { if(state.instanceSignature && state.panel==='instance')renderInstance(); state.instanceSignature = null; return; }
+  $('instance-mode').textContent = instance.mode === 'pvpve' ? 'PvPvE' : 'PvE';
+  $('instance-phase').textContent = phaseNames[instance.phase] || instance.phase || instance.status;
+  $('instance-countdown').textContent = countdown(instance.remainingSeconds);
+  $('instance-objective').textContent = instance.finalExitUnlocked ? '终局出口已开启，请按提示撤离。' : instance.boss?.dead ? 'Boss已击败，寻找终局钥匙并前往终局出口。' : instance.boss?.spawned ? `Boss已出现 · 地图 ${instance.boss.mapId}。留意当前地图禁区。` : instance.ordinaryExitUnlocked ? '普通出口已解锁，可继续探索或个人撤离。' : '探索资源、寻找钥匙，面向箱子与装置按 E。';
+  const timer = document.getElementById('instance-panel-clock'); if(timer) timer.textContent = countdown(instance.remainingSeconds);
+  const signature = JSON.stringify([instance.id,instance.mode,instance.status,instance.phase,instance.players,instance.boss,instance.ordinaryExitUnlocked,instance.finalExitUnlocked,instance.ordinaryZonesDisabled,instanceKeys(instance)]);
+  if (state.instanceSignature !== signature) {state.instanceSignature=signature;if(state.panel==='instance')renderInstance();}
+}
+function statusCard(label,value) { const card=node('div','instance-stat'); card.append(node('span','',label),node('strong','',String(value))); return card; }
+function renderInstance() {
+  const root = $('panel-content'); root.replaceChildren(); const instance = state.snapshot?.instance;
+  if (instance) {
+    const intro=node('div','instance-intro');intro.append(node('h3','',modeName(instance.mode)),node('p','hint',`副本 ${instance.id}`));root.append(intro);
+    const stats=node('div','instance-stats'),time=statusCard('本局剩余时间',countdown(instance.remainingSeconds));time.querySelector('strong').id='instance-panel-clock';stats.append(statusCard('当前阶段',phaseNames[instance.phase]||instance.status),time);root.append(stats);
+    const keys=instanceKeys(instance),keyRow=node('div','instance-stats');keyRow.append(statusCard('普通出口钥匙',keys.ordinary),statusCard('控制装置钥匙',keys.control),statusCard('终局出口钥匙',keys.final));root.append(keyRow);
+    const objectives=node('ol','instance-objectives');
+    for (const text of [
+      `普通出口：${instance.ordinaryExitUnlocked?'已解锁，可交互撤离':'寻找钥匙，前往普通出口解锁'}`,
+      `普通禁区：${instance.ordinaryZonesDisabled?'已解除':'收集控制钥匙，与解除装置交互'}`,
+      `Boss：${instance.boss?.dead?'已击败':instance.boss?.spawned?`已出现，位于地图 ${instance.boss.mapId}`:'在后续阶段出现'}`,
+      `终局出口：${instance.finalExitUnlocked?'已开启':'使用终局钥匙开启，完成本局'}`
+    ])objectives.append(node('li','',text));root.append(objectives,node('h3','report-section-title','本局玩家'));
+    for(const player of instance.players||[]){const row=node('div','instance-player');row.append(node('span','',`${player.name}${player.id===instance.ownerId?' · 房主':''}`),node('span','hint',player.result?'已结算':player.dead?'已倒下':player.connected===false?'离线 · 角色留场':'在线'));root.append(row);}
+    const actions=node('div','panel-actions');
+    if(instance.status==='waiting'&&instance.ownerId===state.snapshot?.playerId){const start=node('button','','开始副本');start.onclick=()=>send({type:'instance',action:'start'});actions.append(start);}
+    const leave=node('button','secondary',instance.status==='waiting'?'离开准备区':'退出并返回世界');leave.onclick=()=>{if(send({type:'instance',action:'leave'}))closePanel();};actions.append(leave);root.append(actions);
+    root.append(node('p','hint',instance.status==='waiting'?'房主启动后，世界将按本局时间推进。':'副本不会因菜单、断线或离线暂停。主动退出的结果由服务器结算。'));
+    return;
+  }
+  if(!state.instanceService){root.append(node('p','empty-state','请在世界出生点附近找到远征接引员，面向 NPC 按 E 打开服务。'));return;}
+  root.append(node('p','','每个副本拥有独立地图、资源、敌人与计时。请选择合作探索或允许玩家相互攻击的竞争模式。'));
+  const create=node('div','instance-create');
+  for(const [mode,label,description]of [['pve','创建 PvE 副本','合作探索 · 玩家之间不互相伤害'],['pvpve','创建 PvPvE 副本','与敌人战斗，也可能遭遇其他玩家追杀']]){
+    const card=node('div','instance-mode-card'),button=node('button','',label);button.onclick=()=>send({type:'instance',action:'create',mode});card.append(node('p','hint',description),button);create.append(card);
+  }
+  root.append(create,node('h3','report-section-title','可加入的副本'));
+  const rooms=state.instanceService.instances||[];
+  if(!rooms.length)root.append(node('p','empty-state','暂时没有开放的副本，可以创建新的行动。'));
+  for(const room of rooms){const row=node('div','item-row'),details=node('div','item-description'),count=Array.isArray(room.players)?room.players.length:room.players||0;details.append(node('strong','',modeName(room.mode)),node('p','',`${room.id} · ${count} 人 · ${room.status==='waiting'?'等待开始':room.status==='active'?'正在进行':'已结束'}`));const join=node('button','','加入');join.disabled=room.status==='ended';join.onclick=()=>send({type:'instance',action:'join',instanceId:room.id});row.append(details,join);root.append(row);}
+  const refresh=node('button','secondary','刷新副本列表');refresh.onclick=()=>send({type:'instance',action:'list'});root.append(refresh);
+}
+function renderInstanceResult() {
+  const result=state.instanceResult||{},root=$('panel-content');root.replaceChildren();
+  const outcomes={escaped:'成功撤离',victory:'行动成功',completed:'行动完成',cleared:'完成终局',dead:'行动中倒下',death:'行动中倒下',defeated:'行动失败',abandoned:'主动离开',left:'已离开副本',timeout:'行动时间结束',failed:'行动结束'};
+  root.append(node('div',`result-title ${['dead','death','defeated','failed'].includes(result.outcome)?'danger-text':''}`,outcomes[result.outcome]||result.outcome||'本局已结算'));
+  if(result.reason){const reasonNames={'final-exit':'终局出口已开启，本局结束。','boss-exit':'封锁守卫被击败，终局出口已开启。','timeout':'行动时间耗尽。','server-shutdown':'服务器维护，本局已结算。','all-left':'所有玩家已离开本局。',escaped:'你通过普通出口安全撤离。',left:'你已主动退出本局。',dead:'角色死亡，本次行动结束。'};root.append(node('p','',reasonNames[result.reason]||result.reason));}
+  root.append(node('p','hint',`副本 ${result.instanceId||''} · 物品与结果以服务器结算为准。`));
+  if(result.rewards)root.append(node('pre','report-pre',JSON.stringify(result.rewards,null,2)));
+  const back=node('button','','返回世界');back.onclick=()=>{if(state.snapshot?.instance)send({type:'instance',action:'leave'});closePanel();};root.append(back);
+}

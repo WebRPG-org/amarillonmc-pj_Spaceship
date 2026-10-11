@@ -1,20 +1,23 @@
 import {randomUUID} from 'node:crypto';
 import {EventRuntime} from './events.mjs';
 import {addInventory,applyRecipe,computeDamage} from './combat.mjs';
+import {normalizeWeapons,weaponAttack,consumeAttackCost,equippedWeapon} from './weapons.mjs';
+import {OfflineAI,normalizeOfflineBehavior} from './offline-ai.mjs';
+import {MouseNavigation} from './mouse-navigation.mjs';
 
 export const DIRECTIONS={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
 const persistedKeys=['schemaVersion','mapId','x','y','direction','characterName','characterIndex','hp','maxHp','mp','maxMp','level','exp','gold','inventory','skills','equips','switches','variables','selfSwitches','stats','dead','classId','states','ending','paramPlus'];
-const cloneState=p=>structuredClone(Object.fromEntries(persistedKeys.filter(k=>p[k]!==undefined).map(k=>[k,p[k]])));
+export const cloneState=p=>structuredClone(Object.fromEntries(persistedKeys.filter(k=>p[k]!==undefined).map(k=>[k,p[k]])));
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
 const finite=(v,fallback=0)=>Number.isFinite(Number(v))?Number(v):fallback;
 const comments=page=>(page?.list||[]).filter(c=>[108,408].includes(c.code)).map(c=>c.parameters[0]).join('\n');
 
 /** One authority owns each map. UI scenes never affect this simulation clock. */
 export class World {
-  constructor({content,store,devTools=false,clock=Date.now,random=Math.random}) {
-    Object.assign(this,{content,store,devTools,clock,random});
+  constructor({content,store,devTools=false,clock=Date.now,random=Math.random,retainDisconnected=false,hooks={}}) {
+    Object.assign(this,{content,store,devTools,clock,random,retainDisconnected,hooks});
     this.players=new Map();this.connecting=new Set();this.maps=new Map();this.tick=0;this.now=clock();this.lastSave=this.now;
-    this.events=new EventRuntime({content,world:this});this.runtimeDiagnostics=new Map();
+    this.events=new EventRuntime({content,world:this});this.runtimeDiagnostics=new Map();this.offlineAI=new OfflineAI(this);this.navigation=new MouseNavigation(this);
   }
   async ensureMap(id) {
     id=Number(id);if(this.maps.has(id)){const map=this.maps.get(id);await map.ready;return map;}
@@ -23,7 +26,7 @@ export class World {
     this.maps.set(id,map);
     for(const event of raw.events.filter(Boolean))this.addEvent(map,event,id);
     this.events.refreshMap(map);
-    map.ready=(async()=>{for(const drop of await this.store.listDrops(id))map.drops.set(drop.id,{...drop,kind:drop.kind||drop.metadata?.kind||'item'});})();
+    map.ready=(async()=>{for(const drop of await this.store.listDrops(id))map.drops.set(drop.id,{...drop,kind:drop.kind||drop.metadata?.kind||'item'});if(this.hooks.onMapReady)await this.hooks.onMapReady(map);})();
     await map.ready;return map;
   }
   addEvent(map,raw,sourceMapId=map.id,position=null) {
@@ -47,6 +50,7 @@ export class World {
   }
   recalculate(player) {
     const db=this.content.database,cl=db.Classes[player.classId||1];
+    normalizeWeapons(player,this.content.weaponProfiles);
     player.equips||={};
     for(const kind of ['weapon','armor'])if(player.equips[kind]&&!player.inventory?.some(i=>i.kind===kind&&i.itemId===player.equips[kind]&&i.quantity>0))player.equips[kind]=0;
     const p=Array.from({length:8},(_,i)=>finite(cl?.params?.[i]?.[Math.max(1,Math.min(99,player.level||1))],[150,60,25,15,25,15,15,15][i]));
@@ -55,7 +59,7 @@ export class World {
     player.maxHp=Math.max(1,p[0]);player.maxMp=Math.max(0,p[1]);player.stats={atk:p[2],def:p[3],mat:p[4],mdf:p[5],agi:p[6],luk:p[7]};
     player.hp=Math.min(player.maxHp,player.hp??player.maxHp);player.mp=Math.min(player.maxMp,player.mp??player.maxMp);
   }
-  async connect(account,send) {
+  async connect(account,send,{announce=true}={}) {
     if(this.players.has(account.id)||this.connecting.has(account.id))throw new Error('该角色已在另一窗口连接；请先断开原连接');
     this.connecting.add(account.id);
     try {
@@ -65,21 +69,24 @@ export class World {
     const map=await this.ensureMap(player.mapId),spawn=this.content.findSpawn(map.id,player.x,player.y);
     if(spawn)Object.assign(player,spawn);
     await this.store.savePlayer(player.id,cloneState(player));this.players.set(player.id,player);
-    this.send(player.id,{type:'notice',message:'已连接服务端权威世界。菜单期间世界仍会运行。'});
-    this.sendSnapshot(player);return player;
+    if(announce){this.send(player.id,{type:'notice',message:'已连接服务端权威世界。菜单期间世界仍会运行。'});this.sendSnapshot(player);}return player;
     } finally {this.connecting.delete(account.id);}
   }
   async disconnect(id) {
     const player=this.players.get(id);if(!player)return;
     if(player._disconnecting)return player._disconnecting;
-    player._connected=false;this.events.cancel?.(player);
-    player._disconnecting=(async()=>{let queued;do{queued=player._queue;await queued;}while(queued!==player._queue);await this.store.savePlayer(id,cloneState(player));this.players.delete(id);})();
+    player._connected=false;this.events.cancel?.(player);this.offlineAI.cancel(player);this.navigation.cancel(player);
+    player._disconnecting=(async()=>{await this.flush(player);if(!this.retainDisconnected)this.players.delete(id);})().finally(()=>{delete player._disconnecting;});
     return player._disconnecting;
   }
+  async flush(player){let queued;do{queued=player._queue;await queued;}while(queued!==player._queue);if(player._economyUncertain)await this.recoverEconomy(player);await this.store.savePlayer(player.id,cloneState(player));}
+  async detach(id,{save=true}={}){const p=this.players.get(id);if(!p)return;const connected=p._connected;p._connected=false;this.events.cancel?.(p);this.offlineAI.cancel(p);this.navigation.cancel(p);try{if(save)await this.flush(p);else await p._queue;}catch(error){p._connected=connected;throw error;}this.players.delete(id);return p;}
+  async reconnect(id,send){const p=this.players.get(id);if(!p||p._connected)throw new Error('该角色已在另一窗口连接');if(p._disconnecting)await p._disconnecting;p._send=send;p._connected=true;p._lastSeq=-1;this.offlineAI.cancel(p);this.events.cancel?.(p);this.sendSnapshot(p);return p;}
   send(id,message){const p=this.players.get(id);if(p?._connected)p._send(message);}
   broadcast(mapId,message){for(const p of this.players.values())if(p.mapId===mapId)this.send(p.id,message);}
   notice(player,message){this.send(player.id,{type:'notice',message});}
-  enqueue(player,operation){const job=player._queue.then(async()=>{player._economyBusy=true;try{return await operation();}finally{player._economyBusy=false;}});player._queue=job.catch(error=>{this.notice(player,error.message||'操作失败');});return job;}
+  async recoverEconomy(player){const account=await this.store.loadPlayer(player.id);if(!account?.state)throw new Error('库存提交状态仍待确认');this.adoptEconomy(player,account.state);if(Number.isFinite(account.state.mp))player.mp=Math.max(0,Math.min(player.maxMp,account.state.mp));player._economyUncertain=false;}
+  enqueue(player,operation){const job=player._queue.then(async()=>{player._economyBusy=true;try{if(player._economyUncertain)await this.recoverEconomy(player);return await operation();}catch(error){if(error.economyUncertain){player._economyUncertain=true;try{await this.recoverEconomy(player);}catch{/* Keep writes blocked until an authoritative read succeeds. */}}throw error;}finally{player._economyBusy=false;}});player._queue=job.catch(error=>{this.notice(player,error.message||'操作失败');});return job;}
   persist(player){this.enqueue(player,()=>this.store.savePlayer(player.id,cloneState(player))).catch(()=>{});return player._queue;}
   markDirty(player){this.recalculate(player);player._dirty=true;}
   getSwitch(player,id){return !!player.switches?.[id];}
@@ -95,7 +102,9 @@ export class World {
     });
   }
   async transfer(player,mapId,x,y) {
+    this.navigation.cancel(player);
     return this.enqueue(player,async()=>{
+    if(this.hooks.beforeTransfer)this.hooks.beforeTransfer(player,Number(mapId));
     await this.ensureMap(mapId);const spawn=this.content.findSpawn(Number(mapId),x,y);if(!spawn)throw new Error('地图没有可用出生点');
     player.mapId=Number(mapId);Object.assign(player,spawn);player._lastMove=this.now;this.events.onTransfer?.(player);this.sendSnapshot(player);await this.store.savePlayer(player.id,cloneState(player));
     });
@@ -131,55 +140,105 @@ export class World {
     for(const event of this.maps.get(player.mapId)?.events.values()||[]){if(event.erased||event.enemyId||event.x!==pos.x||event.y!==pos.y)continue;const page=this.events.pageFor?.(player,event,player.mapId);if([1,2].includes(page?.trigger))this.events.start(player,event);}
   }
   interact(player,targetId) {
-    if(player.dead)return;
+    if(player.dead||player._dying||player._economyBusy)return;
     const map=this.maps.get(player.mapId),[dx,dy]=DIRECTIONS[player.direction]||[0,1];
-    const candidates=[...map.events.values()].filter(e=>!e.erased&&!e.enemyId&&distance(player,e)<=1);
+    const candidates=[...map.events.values()].filter(e=>{
+      if(e.erased||e.enemyId||distance(player,e)>1)return false;
+      const page=this.events.pageFor(player,e,map.id);
+      return page&&!page.engineDisabledReason&&[0,1,2].includes(page.trigger??0);
+    });
     const event=targetId?candidates.find(e=>e.id===targetId):candidates.find(e=>e.x===player.x+dx&&e.y===player.y+dy)||candidates.find(e=>e.x===player.x&&e.y===player.y);
-    if(event){this.events.start(player,event);return;}
+    if(event){if(event.service)return this.hooks.onService?.(player,event);this.events.start(player,event);return;}
     const drop=[...map.drops.values()].find(d=>distance(player,d)<=1.5);if(drop)return this.pickup(player,drop.id,randomUUID());
     this.notice(player,'面向事件按 E 交互，靠近地上物品可拾取。');
   }
   targets(source) {
     const map=this.maps.get(source.mapId);if(!map)return[];
-    const players=[...this.players.values()].filter(p=>p._connected!==false&&p.mapId===source.mapId&&!p.dead&&!p._dying&&p.id!==source.id);
+    const players=[...this.players.values()].filter(p=>p.mapId===source.mapId&&!p.dead&&!p._dying&&!p._transferring&&p.id!==source.id);
     if(source.enemyId)return players;
     return [...map.events.values()].filter(e=>e.enemyId&&!e.erased&&!e.dead).concat(map.pvp?players:[]);
   }
-  attack(player,skillId=1) {
-    skillId=Number(skillId);if(player.dead||player._dying||player._economyBusy||!player.skills.includes(skillId))return;
-    const skill=this.content.database.Skills[skillId];if(!skill)return;
-    const tool=skillId===1?this.content.getTool(this.content.weaponTools.get(player.equips.weapon))||this.content.getToolForSkill(1):this.content.getToolForSkill(skillId);
-    if(this.now-player._lastAttack<Math.max(200,(tool?.cooldown||.45)*1000))return;
-    if(player.mp<(skill.mpCost||0)){this.notice(player,'MP 不足');return;}
-    if(tool?.itemCost){const owned=player.inventory.find(i=>i.kind==='item'&&i.itemId===tool.itemCost);if(!owned){this.notice(player,'技能需要弹药');return;}addInventory(player,'item',tool.itemCost,-1);this.persist(player);}
-    player._lastAttack=this.now;player.mp-=skill.mpCost||0;
-    if([7,8,9,10,11].includes(skill.scope)){this.hit(player,player,skill,tool);return;}
-    this.performAttack(player,skill,tool);
+  attack(player,skillId=1,requestId=randomUUID()) {
+    skillId=Number(skillId);
+    if(player.dead||player._dying||player._transferring||player._attackPending||player._economyBusy)return Promise.resolve(false);
+    const expectedMap=player.mapId,expectedWeapon=player.equips?.weaponInstanceId,expectedDirection=player.direction;
+    player._attackPending=true;
+    return this.enqueue(player,async()=>{
+      if(player.dead||player._dying||player._transferring||player.mapId!==expectedMap||player.equips?.weaponInstanceId!==expectedWeapon)return false;
+      this.validateRequest(requestId);
+      const definition=weaponAttack(this.content,player,skillId),{skill,tool}=definition;
+      if(!skill||(!player.skills.includes(skillId)&&definition.profile?.skillId!==skillId))return false;
+      if(this.now-player._lastAttack<Math.max(200,(tool?.cooldown||.45)*1000))return false;
+      // Persist current movement/HP, then lock and pay before publishing any attack.
+      await this.store.savePlayer(player.id,cloneState(player));
+      const outcome=await this.store.commitPlayer(player.id,requestId,state=>{
+        if(player.dead||player._dying||player._transferring||player.mapId!==expectedMap||player.equips?.weaponInstanceId!==expectedWeapon)throw new Error('角色状态已变化，攻击取消');
+        normalizeWeapons(state,this.content.weaponProfiles);
+        const cost=consumeAttackCost(state,weaponAttack(this.content,state,skillId));
+        return{attack:true,...cost};
+      });
+      if(outcome.duplicate)return false;
+      this.adoptEconomy(player,outcome.state);player.mp=Math.max(0,player.mp-(outcome.result?.mpCost||0));player._lastAttack=this.now;
+      if(player.dead||player._dying||player._transferring||player.mapId!==expectedMap)return false;
+      player.direction=expectedDirection;
+      if([7,8,9,10,11].includes(skill.scope))this.hit(player,player,skill,tool);
+      else this.performAttack(player,skill,tool,definition.profile);
+      return true;
+    }).finally(()=>{player._attackPending=false;});
   }
-  useTool(player,toolId) {const tool=this.content.getTool(Number(toolId));if(!tool)return;const skill=this.content.database.Skills[tool.skillId||1];if(!skill)return;this.performAttack(player,skill,tool);}
-  performAttack(source,skill,tool) {
+  useTool(player,toolId) {
+    const tool=this.content.getTool(Number(toolId));if(!tool)return;
+    if(!player.enemyId)return this.attack(player,tool.skillId||1).catch(()=>false);
+    const skill=this.content.database.Skills[tool.skillId||1];if(skill)this.performAttack(player,skill,tool);
+  }
+  performAttack(source,skill,tool,profile=null) {
     const [dx,dy]=DIRECTIONS[source.direction]||[0,1],map=this.maps.get(source.mapId);
     const delayed=Math.max(0,Number(tool?.meta?.tool_wait_collision)||0)/60;
     const duration=Math.max(.15,Math.min(5,tool?.duration||.25));
     const projectile=!!tool?.projectile;
-    const attack={id:randomUUID(),ownerId:source.id,source,mapId:source.mapId,x:source.x+(projectile?dx*.5:0),y:source.y+(projectile?dy*.5:0),direction:source.direction,skillId:skill.id,skill,tool,dx,dy,speed:projectile?6:0,range:Math.max(1,Math.min(10,tool?.range||1)),area:tool?.area||'front_rhombus',born:this.now,expires:this.now+duration*1000,activeAt:this.now+delayed*1000,hit:new Map(),projectile};
+    const maxDistance=Math.max(1,Math.min(20,profile?.range||Number(tool?.meta?.tool_max_distance)||6));
+    const attack={id:randomUUID(),ownerId:source.id,source,mapId:source.mapId,x:source.x,y:source.y,originX:source.x,originY:source.y,maxDistance,distance:0,direction:source.direction,skillId:skill.id,skill,tool,dx,dy,speed:projectile?Number(tool?.meta?.tool_speed)||6:0,range:Math.max(1,Math.min(10,profile?.range||tool?.range||1)),area:tool?.area||'front_rhombus',born:this.now,expires:this.now+(projectile?Math.max(duration,maxDistance/6):duration)*1000,activeAt:this.now+delayed*1000,hit:new Map(),projectile};
     map.projectiles.set(attack.id,attack);
-    this.broadcast(source.mapId,{type:'effect',kind:'attack',x:source.x+dx,y:source.y+dy,animationId:tool?.animationId||skill.animationId,skillId:skill.id,direction:source.direction});
+    // New ranged weapon animations represent impact and are emitted by hit().
+    this.broadcast(source.mapId,{type:'effect',kind:'attack',x:source.x+(profile?0:dx),y:source.y+(profile?0:dy),animationId:profile?.projectile?0:tool?.animationId||skill.animationId,skillId:skill.id,direction:source.direction});
     if(!delayed)this.resolveAttack(attack);
   }
   resolveAttack(attack) {
     if(this.now<attack.activeAt)return;
-    const source=attack.source;if(source.dead||source.erased||source.mapId!==attack.mapId)return;
+    const source=attack.source;if(source.dead||source._dying||source._transferring||source.erased||source.mapId!==attack.mapId)return;
     for(const target of this.targets(source)) {
       const dx=target.x-attack.x,dy=target.y-attack.y,forward=dx*attack.dx+dy*attack.dy,side=Math.abs(dx*attack.dy-dy*attack.dx);
       let inside=attack.projectile?Math.abs(dx)<=.65&&Math.abs(dy)<=.65:attack.area.includes('square')?Math.max(Math.abs(dx),Math.abs(dy))<=attack.range:Math.abs(dx)+Math.abs(dy)<=attack.range;
       if(!attack.projectile&&(/front|wall|line/.test(attack.area)||!attack.tool))inside=forward>0&&forward<=attack.range&&side<=(attack.area==='wall'?1:0);
       if(!inside)continue;
+      // Wide melee swings do not damage through impassable map tiles.
+      if(!this.attackLineClear(attack.mapId,attack.x,attack.y,target.x,target.y))continue;
+      if(attack.projectile&&Math.abs(target.x-attack.originX)+Math.abs(target.y-attack.originY)>attack.maxDistance)continue;
       const last=attack.hit.get(target.id),multi=Number(attack.tool?.meta?.tool_multihit)||0;
       if(last!==undefined&&(!multi||this.now-last<multi/60*1000))continue;
       attack.hit.set(target.id,this.now);this.hit(source,target,attack.skill,attack.tool);
       if(attack.projectile&&!attack.tool?.piercing){attack.expires=0;break;}
     }
+  }
+  attackLineClear(mapId,x,y,targetX,targetY){
+    let cx=Math.round(x),cy=Math.round(y);const tx=Math.round(targetX),ty=Math.round(targetY);
+    for(let n=0;n<40&&(cx!==tx||cy!==ty);n++){
+      const dx=tx-cx,dy=ty-cy,direction=Math.abs(dx)>=Math.abs(dy)&&dx?(dx>0?6:4):(dy>0?2:8);
+      if(!this.content.isPassable(mapId,cx,cy,direction))return false;
+      const [sx,sy]=DIRECTIONS[direction];cx+=sx;cy+=sy;
+    }
+    return cx===tx&&cy===ty;
+  }
+  advanceProjectile(attack,dt){
+    let remaining=Math.min(attack.speed*dt,attack.maxDistance-attack.distance);
+    while(remaining>0){
+      const step=Math.min(.2,remaining),nx=attack.x+attack.dx*step,ny=attack.y+attack.dy*step;
+      const oldX=Math.round(attack.x),oldY=Math.round(attack.y),newX=Math.round(nx),newY=Math.round(ny);
+      if((oldX!==newX||oldY!==newY)&&!this.content.isPassable(attack.mapId,oldX,oldY,attack.direction)){attack.expires=0;return;}
+      attack.x=nx;attack.y=ny;attack.distance+=step;remaining-=step;
+      this.resolveAttack(attack);if(!attack.expires)return;
+    }
+    if(attack.distance>=attack.maxDistance-1e-8)attack.expires=0;
   }
   hit(source,target,skill,tool) {
     let result;try{result=computeDamage(skill,source,target,this.random);}catch(error){this.runtimeDiagnostics.set(`formula:${skill.id}`,error.message);return;}
@@ -204,22 +263,22 @@ export class World {
     if(entity.dead||entity._dying)return;
     entity.hp=0;entity.dead=true;this.broadcast(entity.mapId,{type:'effect',kind:'death',x:entity.x,y:entity.y,targetId:entity.id});
     if(entity.enemyId){
-      entity.erased=true;entity.respawnAt=this.now+30000;
+      entity.erased=true;entity.respawnAt=entity.noRespawn?Infinity:this.now+30000;
       const enemy=this.content.database.Enemies[entity.enemyId],owner=killer&&!killer.enemyId?killer:null;
       if(owner)this.enqueue(owner,async()=>{
         await this.store.savePlayer(owner.id,cloneState(owner));
-        const drops=(enemy.dropItems||[]).filter(d=>d.kind&&d.dataId&&this.random()<1/(d.denominator||1)).map(d=>({mapId:entity.mapId,x:entity.x,y:entity.y,kind:['','item','weapon','armor'][d.kind],itemId:d.dataId,quantity:1}));
+        const drops=(entity.customDrops||((enemy.dropItems||[]).filter(d=>d.kind&&d.dataId&&this.random()<1/(d.denominator||1)).map(d=>({kind:['','item','weapon','armor'][d.kind],itemId:d.dataId,quantity:1})))).map(d=>({...d,mapId:entity.mapId,x:entity.x,y:entity.y}));
         const outcome=await this.store.createDrops({playerId:owner.id,requestId:`enemy:${entity.id}:${this.tick}`,drops,mutator:state=>{state.gold=(state.gold||0)+(enemy.gold||0);state.exp=(state.exp||0)+(enemy.exp||0);return{gold:enemy.gold,exp:enemy.exp};}});
-        this.adoptEconomy(owner,outcome.state);for(const drop of outcome.drops)this.maps.get(entity.mapId).drops.set(drop.id,drop);
+        this.adoptEconomy(owner,outcome.state);for(const drop of outcome.drops)this.maps.get(entity.mapId).drops.set(drop.id,drop);await this.hooks.onEnemyDeath?.(entity,owner,outcome);
       }).catch(()=>{});
     } else {
       entity._dying=true;
       this.enqueue(entity,async()=>{try{
         // Persist the terminal state and remove all carried stacks in the SAME transaction as drops.
-        const terminal=cloneState(entity),drops=entity.inventory.map(item=>({...item,mapId:entity.mapId,x:entity.x,y:entity.y}));
+        const terminal=cloneState(entity),drops=entity.inventory.length?[{kind:'bag',itemId:0,quantity:1,mapId:entity.mapId,x:entity.x,y:entity.y,metadata:{items:structuredClone(entity.inventory),ownerId:entity.id,ownerName:entity.name,reason:'death'}}]:[];
         const outcome=await this.store.createDrops({playerId:entity.id,requestId:`death:${randomUUID()}`,drops,mutator:state=>{Object.assign(state,terminal,{inventory:[],equips:{weapon:0,armor:0},hp:0,dead:true});return{dead:true};}});
         this.adoptEconomy(entity,outcome.state);this.recalculate(entity);for(const drop of outcome.drops)this.maps.get(entity.mapId).drops.set(drop.id,drop);
-        this.notice(entity,'你已死亡，背包物品掉落在原地。可选择重生。');
+        this.notice(entity,this.hooks.onPlayerDeath?'你已死亡，全部背包物品留在一个遗物背包中。':'你已死亡，全部背包物品留在一个遗物背包中。可选择重生。');await this.hooks.onPlayerDeath?.(entity,killer);
       }catch(error){entity.dead=false;entity.hp=1;throw error;}finally{entity._dying=false;}}).catch(()=>{});
     }
   }
@@ -231,7 +290,8 @@ export class World {
       this.validateRequest(requestId);player._economyBusy=true;
       try{await this.store.savePlayer(player.id,cloneState(player));const outcome=await this.store.claimDrop({playerId:player.id,requestId,dropId,mutator:(state,drop)=>{
         if(drop.mapId!==player.mapId||distance(player,drop)>1.5)throw new Error('物品不在可拾取范围');
-        addInventory(state,drop.kind||drop.metadata?.kind||'item',drop.itemId,drop.quantity);return{picked:drop.id};
+        if(drop.kind==='bag'||drop.metadata?.kind==='bag'){for(const item of drop.metadata?.items||[])addInventory(state,item.kind,item.itemId,item.quantity,item);}
+        else addInventory(state,drop.kind||drop.metadata?.kind||'item',drop.itemId,drop.quantity,drop.metadata);normalizeWeapons(state,this.content.weaponProfiles);return{picked:drop.id};
       }});if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.maps.get(outcome.drop.mapId)?.drops.delete(outcome.drop.id);this.notice(player,'已拾取物品');}
       finally{player._economyBusy=false;}
     });
@@ -242,6 +302,22 @@ export class World {
       const outcome=await this.store.commitPlayer(player.id,requestId,state=>applyRecipe(state,this.content.getRecipe(recipeId),this.content.database));if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.notice(player,'合成成功');
     });
   }
+  inventoryAction(player,message){return this.enqueue(player,async()=>{
+    if(player.dead||player._dying)throw new Error('死亡状态无法整理或丢弃');this.validateRequest(message.requestId||`sort:${randomUUID()}`);
+    await this.store.savePlayer(player.id,cloneState(player));
+    if(message.action==='sort'){
+      const outcome=await this.store.commitPlayer(player.id,message.requestId||`sort:${randomUUID()}`,state=>{const next={inventory:[]};for(const i of state.inventory||[])addInventory(next,i.kind,i.itemId,i.quantity,i);state.inventory=next.inventory.sort((a,b)=>['item','weapon','armor'].indexOf(a.kind)-['item','weapon','armor'].indexOf(b.kind)||a.itemId-b.itemId);return{sorted:true};});
+      if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.notice(player,'背包已整理');return;
+    }
+    if(message.action!=='drop')throw new Error('未知背包操作');this.validateRequest(message.requestId);
+    const kind=message.kind,itemId=Number(message.itemId),quantity=Number(message.quantity);
+    if(!Number.isSafeInteger(quantity)||quantity<=0||!['item','weapon','armor'].includes(kind)||!Number.isSafeInteger(itemId)||itemId<=0)throw new Error('丢弃数量或物品无效');
+    const entry=kind==='weapon'?player.inventory.find(i=>i.kind===kind&&i.itemId===itemId&&(!message.instanceId||i.instanceId===message.instanceId)):null;
+    if(kind==='weapon'&&(!entry||quantity!==1))throw new Error('请选择一件具体武器丢弃');
+    const metadata=entry?structuredClone(entry):{};
+    const outcome=await this.store.createDrops({playerId:player.id,requestId:message.requestId,drops:[{kind,itemId,quantity,mapId:player.mapId,x:player.x,y:player.y,metadata}],mutator:state=>{addInventory(state,kind,itemId,-quantity,metadata);if(state.equips?.[kind]===itemId&&(!state.inventory.some(i=>i.kind===kind&&i.itemId===itemId)||state.equips.weaponInstanceId===entry?.instanceId)){state.equips[kind]=0;if(kind==='weapon')state.equips.weaponInstanceId=null;}return{dropped:true};}});
+    if(!outcome.duplicate){this.adoptEconomy(player,outcome.state);for(const d of outcome.drops)this.maps.get(d.mapId)?.drops.set(d.id,d);}this.notice(player,'物品已丢在脚下');
+  });}
   useItem(player,itemId,requestId) {
     return this.enqueue(player,async()=>{if(player.dead)throw new Error('死亡状态无法使用物品');this.validateRequest(requestId);itemId=Number(itemId);
       const item=this.content.database.Items[itemId];if(!item||!item.effects?.some(e=>[11,12,22].includes(e.code)))throw new Error('该物品暂无可用的场景效果');
@@ -251,9 +327,10 @@ export class World {
       this.hit(player,player,item,null);this.persist(player);
     });
   }
-  equip(player,kind,itemId) {
+  equip(player,kind,itemId,instanceId=null) {
     return this.enqueue(player,async()=>{if(player.dead)throw new Error('死亡状态无法装备');itemId=Number(itemId);if(!['weapon','armor'].includes(kind))throw new Error('无效装备类型');
-      if(itemId&&!player.inventory.some(i=>i.kind===kind&&i.itemId===itemId&&i.quantity>0))throw new Error('没有该装备');const next=cloneState(player);next.equips[kind]=itemId;this.recalculate(next);await this.store.savePlayer(player.id,next);this.adoptEconomy(player,next);this.recalculate(player);
+      const entry=player.inventory.find(i=>i.kind===kind&&i.itemId===itemId&&i.quantity>0&&(!instanceId||i.instanceId===instanceId));
+      if(itemId&&!entry)throw new Error('没有该装备');const next=cloneState(player);next.equips[kind]=itemId;if(kind==='weapon')next.equips.weaponInstanceId=entry?.instanceId||null;this.recalculate(next);await this.store.savePlayer(player.id,next);this.adoptEconomy(player,next);this.recalculate(player);
     });
   }
   async respawn(player) {
@@ -265,7 +342,7 @@ export class World {
     if(action==='loadout'){
       return this.enqueue(player,async()=>{player.dead=false;player.skills=this.content.database.Skills.filter(s=>s?.name&&s.damage?.type).map(s=>s.id);player.skills=[...new Set([1,...player.skills])];player.gold=10000;
         for(const [kind,db]of [['item','Items'],['weapon','Weapons'],['armor','Armors']])for(const item of this.content.database[db])if(item?.name&&!/^-|spare/i.test(item.name)){const owned=player.inventory.find(i=>i.kind===kind&&i.itemId===item.id)?.quantity||0;addInventory(player,kind,item.id,Math.max(0,(kind==='item'?10:1)-owned));}
-        player.hp=player.maxHp;player.mp=player.maxMp;await this.store.savePlayer(player.id,cloneState(player));this.notice(player,'开发测试物品和现有技能已发放');});
+        this.recalculate(player);player.hp=player.maxHp;player.mp=player.maxMp;await this.store.savePlayer(player.id,cloneState(player));this.notice(player,'开发测试物品和现有技能已发放');});
     }
     if(action==='spawnEnemies'){
       const map=this.maps.get(player.mapId);for(let i=0;i<3;i++){const pos=this.content.findSpawn(map.id,player.x+3+i,player.y+2),enemy=this.content.database.Enemies[i+1];if(!pos||!enemy)continue;const raw={id:100000+this.tick*3+i,name:enemy.name,x:pos.x,y:pos.y,pages:[{conditions:{},trigger:0,priorityType:1,image:{characterName:'Monster',characterIndex:i,direction:2,pattern:1,tileId:0},list:[{code:108,parameters:[`enemy_id : ${i+1}`]},{code:0,parameters:[]}]}]};this.addEvent(map,raw,map.id,pos);}
@@ -277,14 +354,16 @@ export class World {
   async command(player,message) {
     if(!player?._connected||!message||typeof message.type!=='string')return;
     switch(message.type){
-      case'move':return this.move(player,Number(message.direction),message.seq);
-      case'attack':return this.attack(player,Number(message.skillId||1));
+      case'navigate':return this.navigation.set(player,message);
+      case'move':this.navigation.cancel(player);return this.move(player,Number(message.direction),message.seq);
+      case'attack':return this.attack(player,Number(message.skillId||1),message.requestId||randomUUID());
       case'interact':return this.interact(player,message.targetId);
       case'dialogue':return this.events.choose(player,message.choice);
       case'pickup':return this.pickup(player,message.entityId,message.requestId);
       case'craft':return this.craft(player,message.recipeId,message.requestId);
       case'useItem':return this.useItem(player,message.itemId,message.requestId);
-      case'equip':return this.equip(player,message.kind,message.itemId);
+      case'equip':return this.equip(player,message.kind,message.itemId,message.instanceId);
+      case'inventory':return this.inventoryAction(player,message);
       case'respawn':return this.respawn(player);
       case'travel':{if(!this.devTools)throw new Error('地图跳转仅限开发模式');if(player.dead)throw new Error('请先重生');const map=this.content.getMap(Number(message.mapId));if(!map)throw new Error('地图不存在');return this.transfer(player,map.id,Math.floor(map.width/2),Math.floor(map.height/2));}
       case'dev':return this.developer(player,message.action);
@@ -292,10 +371,10 @@ export class World {
     }
   }
   update(dt=.05) {
-    this.now=this.clock();this.tick++;this.events.update(dt);
-    for(const player of this.players.values()){if(!player._connected)continue;if(player.hp<=0&&!player.dead)this.kill(player,null);player.states=(player.states||[]).filter(s=>s.expires>this.now);}
+    this.now=this.clock();this.tick++;if(this.paused){if(this.tick%2===0)for(const p of this.players.values())this.sendSnapshot(p);return;}this.events.update(dt);
+    for(const player of this.players.values()){if(player.hp<=0&&!player.dead)this.kill(player,null);player.states=(player.states||[]).filter(s=>s.expires>this.now);this.offlineAI.update(player);this.navigation.update(player);}
     for(const map of this.maps.values()) {
-      if(![...this.players.values()].some(p=>p._connected&&p.mapId===map.id))continue;
+      if(![...this.players.values()].some(p=>p.mapId===map.id))continue;
       for(const event of map.events.values())if(event.enemyId){
         if(event.dead){if(event.respawnAt<=this.now){event.dead=false;event.erased=false;event.x=event.homeX;event.y=event.homeY;this.setEnemyStats(event,this.content.database.Enemies[event.enemyId]);}continue;}
         if(event._eventRouteOwner)continue;
@@ -306,25 +385,24 @@ export class World {
       }
       for(const attack of map.projectiles.values()) {
         if(this.now>=attack.expires||attack.source.dead||attack.source.mapId!==map.id){map.projectiles.delete(attack.id);continue;}
-        if(attack.projectile){const oldX=Math.floor(attack.x),oldY=Math.floor(attack.y);attack.x+=attack.dx*attack.speed*dt;attack.y+=attack.dy*attack.speed*dt;
-          if((oldX!==Math.floor(attack.x)||oldY!==Math.floor(attack.y))&&!this.content.isPassable(map.id,oldX,oldY,attack.direction)){map.projectiles.delete(attack.id);continue;}}
+        if(attack.projectile){this.advanceProjectile(attack,dt);if(!attack.expires){map.projectiles.delete(attack.id);continue;}}
         this.resolveAttack(attack);
       }
       if(map.zone&&this.now>map.zone.endsAt)map.zone=null;
-      if(map.zone&&this.now>=map.zone.startsAt&&this.tick%20===0)for(const p of this.players.values())if(p._connected&&p.mapId===map.id&&!p.dead){this.damage(p,map.zone.damage);this.broadcast(map.id,{type:'effect',kind:'damage',x:p.x,y:p.y,value:map.zone.damage,targetId:p.id});}
+      if(map.zone&&this.now>=map.zone.startsAt&&this.tick%20===0)for(const p of this.players.values())if(p.mapId===map.id&&!p.dead&&!p._transferring){this.damage(p,map.zone.damage);this.broadcast(map.id,{type:'effect',kind:'damage',x:p.x,y:p.y,value:map.zone.damage,targetId:p.id});}
     }
     if(this.tick%2===0)for(const p of this.players.values())this.sendSnapshot(p);
-    if(this.now-this.lastSave>=5000){this.lastSave=this.now;for(const p of this.players.values())if(p._connected&&!p._dying)this.persist(p);}
+    if(this.now-this.lastSave>=5000){this.lastSave=this.now;for(const p of this.players.values())if(!p._dying&&!p._transferring)this.persist(p);}
   }
   snapshot(player) {
     const map=this.maps.get(player.mapId);if(!map)return null;
     const eventViews=[];for(const e of map.events.values()){
       const page=this.events.pageFor?.(player,e,map.id);
-      eventViews.push({id:e.id,eventId:e.eventId,name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason});
+      eventViews.push({id:e.id,eventId:e.eventId,name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service});
     }
     return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,devTools:this.devTools,pvp:map.pvp,
-      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending},zone:map.zone};
+      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
   }
   sendSnapshot(player){const snapshot=this.snapshot(player);if(snapshot)this.send(player.id,snapshot);}
-  async close(){for(const id of [...this.players.keys()])await this.disconnect(id);}
+  async close(){for(const id of [...this.players.keys()])await this.detach(id);}
 }

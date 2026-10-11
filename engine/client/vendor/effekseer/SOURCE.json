@@ -1,0 +1,41 @@
+{
+  "source": "Local resource library: MVDLC/City Exterior Tileset/sample MZ/sample project_jp",
+  "runtime": "Effekseer for WebGL v1.52n (MIT)",
+  "effects": [
+    {
+      "animationId": 121,
+      "effectName": "ArrowSpecial",
+      "dependencies": [
+        "Texture/Arrow.png",
+        "Texture/Particle100.png",
+        "Texture/ParticleAlpha.png"
+      ]
+    },
+    {
+      "animationId": 122,
+      "effectName": "ShootNormal",
+      "dependencies": [
+        "Texture/LightRing.png",
+        "Texture/Particle100.png",
+        "Texture/ParticleAlpha.png",
+        "Texture/Rock.png",
+        "Texture/ThunderC.png"
+      ]
+    },
+    {
+      "animationId": 123,
+      "effectName": "FireOne1",
+      "dependencies": [
+        "Texture/Fog.png",
+        "Texture/Particle100.png"
+      ]
+    },
+    {
+      "animationId": 124,
+      "effectName": "HitPhysical",
+      "dependencies": [
+        "Texture/Particle100.png"
+      ]
+    }
+  ]
+}

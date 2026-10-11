@@ -1,3 +1,4 @@
+import {randomUUID} from 'node:crypto';
 /** Evaluate the arithmetic subset used by this project's damage formulas. No eval/Function. */
 export function evaluateFormula(source, a, b, variables = {}) {
   const input = String(source || '0');
@@ -34,9 +35,19 @@ export function computeDamage(skill, source, target, random = Math.random) {
   return {value:Math.max(0,Math.round(value)),critical,missed:false};
 }
 
-export function addInventory(state, kind, itemId, quantity) {
+export function addInventory(state, kind, itemId, quantity, metadata={}) {
   if(!['item','weapon','armor'].includes(kind)||!Number.isSafeInteger(itemId)||itemId<=0||!Number.isSafeInteger(quantity))throw new Error('Invalid inventory operation');
   state.inventory ||= [];
+  if(kind==='weapon'){
+    if(quantity>0)for(let n=0;n<quantity;n++)state.inventory.push({...structuredClone(metadata),kind,itemId,quantity:1,instanceId:n?randomUUID():(metadata.instanceId||randomUUID())});
+    else {
+      const candidates=state.inventory.filter(i=>i.kind===kind&&i.itemId===itemId&&(!metadata.instanceId||i.instanceId===metadata.instanceId));
+      if(candidates.reduce((n,i)=>n+i.quantity,0)<-quantity)throw new Error('物品数量不足');
+      let left=-quantity;for(const item of candidates){const take=Math.min(item.quantity,left);item.quantity-=take;left-=take;if(!left)break;}
+      state.inventory=state.inventory.filter(i=>i.quantity>0);
+    }
+    return;
+  }
   const entry=state.inventory.find(i=>i.kind===kind&&i.itemId===itemId),current=entry?.quantity||0;
   if(current+quantity<0)throw new Error('物品数量不足');
   if(entry)entry.quantity+=quantity;else if(quantity>0)state.inventory.push({kind,itemId,quantity});

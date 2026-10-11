@@ -8,8 +8,8 @@ const content=await loadContent(projectRoot);
 
 test('imports every existing map, database and enabled plugin as data',()=>{
   assert.equal(content.maps.size,30);
-  assert.equal(content.coverage.summary.events,333);
-  assert.equal(content.coverage.summary.pages,387);
+  assert.equal(content.coverage.summary.events,337);
+  assert.equal(content.coverage.summary.pages,391);
   assert.equal(content.coverage.summary.plugins,44);
   assert.equal(content.getMap(11).width,59);
   assert.equal(content.database.Items[40].name,'Curry Bread');
@@ -23,6 +23,8 @@ test('Chrono tool import preserves real skills and projectile metadata',()=>{
   assert.equal(content.weaponTools.get(1),80);
   assert.ok(content.getTool(99).damage.formula);
   assert.equal(content.getTool(1).itemId,1);
+  assert.equal(content.coverage.summary.tools,76);
+  for(const id of [100,101,102,103])assert.ok(content.getTool(id));
 });
 
 test('imports recipe ingredients, unlock books and composition output',()=>{

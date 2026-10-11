@@ -2,6 +2,7 @@ import mysql from 'mysql2/promise';
 import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } from 'node:crypto';
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
+import { RoundStore, roundKey, roundRow } from './round-store.mjs';
 
 const scrypt = promisify(scryptCallback);
 const SCRYPT_OPTIONS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -14,6 +15,7 @@ function stateValue(state) {
   const result = clone(state);
   result.schemaVersion ??= 1;
   if (!Number.isInteger(result.schemaVersion) || result.schemaVersion < 1) throw failure('INVALID_STATE', 'Invalid state schema version.');
+  for(const item of result.inventory||[])weaponValue(item);
   return result;
 }
 
@@ -49,10 +51,26 @@ function dropRow(row) {
   return { id: row.id, mapId: row.map_id, x: row.x, y: row.y, kind: row.kind, itemId: row.item_id, quantity: row.quantity, metadata: decode(row.metadata) };
 }
 
+function weaponValue(item) {
+  if(item.kind!=='weapon')return;
+  if(item.instanceId!==undefined&&(item.quantity!==1||typeof item.instanceId!=='string'||!/^[A-Za-z0-9_.:-]{1,128}$/.test(item.instanceId)))throw failure('INVALID_WEAPON','Invalid individual weapon identity.');
+  if(item.durability!==undefined&&(!Number.isSafeInteger(item.durability)||!Number.isSafeInteger(item.maxDurability)||item.durability<0||item.maxDurability<1||item.durability>item.maxDurability))throw failure('INVALID_WEAPON','Invalid individual weapon durability.');
+}
+
 function dropValue(value) {
   const drop = { ...value, id: value.id ?? randomUUID(), kind: value.kind ?? 'item', metadata: value.metadata ?? {} };
-  if (!/^[0-9a-f-]{36}$/i.test(drop.id) || !['item', 'weapon', 'armor'].includes(drop.kind)) throw failure('INVALID_DROP', 'Invalid drop identity or kind.');
-  for (const name of ['mapId', 'itemId', 'quantity']) {
+  if (!/^[0-9a-f-]{36}$/i.test(drop.id) || !['item', 'weapon', 'armor', 'bag'].includes(drop.kind)) throw failure('INVALID_DROP', 'Invalid drop identity or kind.');
+  if (drop.kind === 'bag') {
+    drop.itemId ??= 0;
+    drop.quantity ??= 1;
+    if (drop.itemId !== 0 || drop.quantity !== 1 || !Array.isArray(drop.metadata.items) || drop.metadata.items.length > 200) throw failure('INVALID_DROP', 'A bag must contain an array of at most 200 item stacks.');
+    for (const item of drop.metadata.items) {
+      if (!['item', 'weapon', 'armor'].includes(item.kind) || ![item.itemId, item.quantity].every(n => Number.isSafeInteger(n) && n > 0 && n <= 2147483647)) throw failure('INVALID_DROP', 'Invalid bag item stack.');
+      weaponValue(item);
+    }
+  }
+  if(drop.kind==='weapon')weaponValue({...drop.metadata,kind:drop.kind,quantity:drop.quantity});
+  for (const name of ['mapId', ...(drop.kind === 'bag' ? [] : ['itemId']), 'quantity']) {
     if (!Number.isSafeInteger(drop[name]) || drop[name] <= 0 || drop[name] > 2147483647) throw failure('INVALID_DROP', `Invalid drop ${name}.`);
   }
   if (![drop.x, drop.y].every(v => Number.isSafeInteger(v) && v >= 0 && v <= 2147483647)) throw failure('INVALID_DROP', 'Invalid drop coordinates.');
@@ -79,6 +97,10 @@ export class MySqlStore {
       await connection.query(`USE \`${this.database}\``);
       const schema = await readFile(new URL('./schema.sql', import.meta.url), 'utf8');
       for (const statement of schema.split(';').map(part => part.trim()).filter(Boolean)) await connection.query(statement);
+      // Existing installations keep all account/world data. Only extend the
+      // existing enum; the new round/profile tables above are additive.
+      const [columns] = await connection.execute('SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?', [this.database, 'world_drops', 'kind']);
+      if (!columns[0]?.COLUMN_TYPE.includes("'bag'")) await connection.query("ALTER TABLE world_drops MODIFY COLUMN kind ENUM('item', 'weapon', 'armor', 'bag') NOT NULL DEFAULT 'item'");
     } finally {
       await connection.end();
     }
@@ -114,6 +136,137 @@ export class MySqlStore {
     return playerRow(rows[0]);
   }
 
+  normalizeState(state) { return stateValue(state); }
+  normalizeDrop(drop) { return dropValue(drop); }
+  decodeDrop(row) { return dropRow(row); }
+  validateRequest(requestId) { return requestKey(requestId); }
+
+  async loadProfile(playerId) {
+    const [rows] = await this.pool.execute('SELECT profile FROM player_profiles WHERE player_id = ?', [playerId]);
+    return rows[0] ? clone(decode(rows[0].profile)) : {};
+  }
+
+  async saveProfile(playerId, profile) {
+    if (!profile || typeof profile !== 'object' || Array.isArray(profile)) throw failure('INVALID_PROFILE', 'Profile must be an object.');
+    const next = clone(profile);
+    await this.pool.execute('INSERT INTO player_profiles (player_id, profile) VALUES (?, ?) ON DUPLICATE KEY UPDATE profile = VALUES(profile), revision = revision + 1', [playerId, JSON.stringify(next)]);
+    return next;
+  }
+
+  forRound(roundId) { return new RoundStore(this, roundKey(roundId)); }
+  forInstance(roundId) { return this.forRound(roundId); }
+
+  async createRound({ id = randomUUID(), definitionId = 'default', status = 'waiting', metadata = {} } = {}) {
+    roundKey(id);
+    if (typeof definitionId !== 'string' || !definitionId.length || definitionId.length > 96 || !['waiting', 'active'].includes(status)) throw failure('INVALID_ROUND', 'Invalid round definition or initial status.');
+    await this.pool.execute('INSERT INTO rounds (id, definition_id, status, metadata) VALUES (?, ?, ?, ?)', [id, definitionId, status, JSON.stringify(metadata)]);
+    return this.loadRound(id);
+  }
+
+  async loadRound(roundId) {
+    const [rows] = await this.pool.execute('SELECT * FROM rounds WHERE id = ?', [roundKey(roundId)]);
+    return rows[0] ? roundRow(rows[0]) : null;
+  }
+
+  async withConnectionTransaction(action) {
+    const connection = await this.pool.getConnection();
+    let committing=false;
+    try {
+      await connection.beginTransaction();
+      const result = await action(connection);
+      committing=true;
+      await connection.commit();
+      return result;
+    } catch (error) {
+      if(committing)error.economyUncertain=true;
+      // Preserve the original connection/COMMIT error for outcome recovery.
+      try { await connection.rollback(); } catch {}
+      throw error;
+    } finally { connection.release(); }
+  }
+
+  async updateRound(roundId, { status, metadata } = {}) {
+    roundKey(roundId);
+    return this.withConnectionTransaction(async connection => {
+      const [rows] = await connection.execute('SELECT * FROM rounds WHERE id = ? FOR UPDATE', [roundId]);
+      if (!rows[0]) throw failure('ROUND_NOT_FOUND', 'Round does not exist.');
+      const current = roundRow(rows[0]);
+      if (!['waiting', 'active'].includes(current.status)) throw failure('ROUND_CLOSED', 'Round is already closed.');
+      if (status !== undefined && (!['waiting', 'active'].includes(status) || current.status === 'active' && status === 'waiting')) throw failure('INVALID_ROUND_STATE', 'Invalid round transition.');
+      const nextMetadata = metadata === undefined ? current.metadata : { ...current.metadata, ...clone(metadata) };
+      await connection.execute('UPDATE rounds SET status = ?, metadata = ? WHERE id = ?', [status ?? current.status, JSON.stringify(nextMetadata), roundId]);
+      const [updated] = await connection.execute('SELECT * FROM rounds WHERE id = ?', [roundId]);
+      return roundRow(updated[0]);
+    });
+  }
+
+  async joinRound(roundId, playerId, initialState) {
+    roundKey(roundId);
+    const next = stateValue(initialState);
+    return this.withConnectionTransaction(async connection => {
+      // Serialize joins for this account, including two different rounds.
+      const [players] = await connection.execute('SELECT id, username FROM players WHERE id = ? FOR UPDATE', [playerId]);
+      if (!players[0]) throw failure('PLAYER_NOT_FOUND', 'Player does not exist.');
+      const [rounds] = await connection.execute('SELECT status FROM rounds WHERE id = ? FOR UPDATE', [roundId]);
+      if (!rounds[0]) throw failure('ROUND_NOT_FOUND', 'Round does not exist.');
+      if (!['waiting', 'active'].includes(rounds[0].status)) throw failure('ROUND_CLOSED', 'Round is already closed.');
+      const [existing] = await connection.execute('SELECT state, status FROM round_participants WHERE round_id = ? AND player_id = ?', [roundId, playerId]);
+      if (existing[0]) {
+        if (existing[0].status !== 'active') throw failure('PARTICIPANT_CLOSED', 'This character already left this round.');
+        return { id: Number(playerId), username: players[0].username, state: stateValue(decode(existing[0].state)), duplicate: true };
+      }
+      const [active] = await connection.execute("SELECT round_id FROM round_participants WHERE player_id = ? AND status = 'active'", [playerId]);
+      if (active.length) throw failure('ALREADY_IN_ROUND', 'Player already belongs to another unfinished round.');
+      await connection.execute('INSERT INTO round_participants (round_id, player_id, state) VALUES (?, ?, ?)', [roundId, playerId, JSON.stringify(next)]);
+      return { id: Number(playerId), username: players[0].username, state: next, duplicate: false };
+    });
+  }
+
+  async getActiveParticipation(playerId) {
+    const [rows] = await this.pool.execute("SELECT p.round_id, p.state, p.status, r.definition_id, r.metadata FROM round_participants p JOIN rounds r ON r.id = p.round_id WHERE p.player_id = ? AND p.status = 'active' AND r.status IN ('waiting', 'active')", [playerId]);
+    if (!rows[0]) return null;
+    return { roundId: rows[0].round_id, status: rows[0].status, definitionId: rows[0].definition_id, state: stateValue(decode(rows[0].state)), metadata: decode(rows[0].metadata) };
+  }
+
+  async leaveRound(roundId, playerId, result = {}) {
+    roundKey(roundId);
+    return this.withConnectionTransaction(async connection => {
+      await connection.execute('SELECT id FROM rounds WHERE id = ? FOR SHARE', [roundId]);
+      const [rows] = await connection.execute('SELECT status, result, state FROM round_participants WHERE round_id = ? AND player_id = ? FOR UPDATE', [roundId, playerId]);
+      if (!rows[0]) throw failure('PARTICIPANT_NOT_FOUND', 'Player does not belong to this round.');
+      if (rows[0].status !== 'active') return { roundId, playerId: Number(playerId), status: rows[0].status, result: decode(rows[0].result), duplicate: true };
+      await connection.execute("UPDATE round_participants SET status = 'left', result = ?, left_at = CURRENT_TIMESTAMP(3) WHERE round_id = ? AND player_id = ?", [JSON.stringify(result), roundId, playerId]);
+      return { roundId, playerId: Number(playerId), status: 'left', result: clone(result), duplicate: false };
+    });
+  }
+
+  async finishRound(roundId, result = {}) {
+    roundKey(roundId);
+    return this.withConnectionTransaction(async connection => {
+      const [rows] = await connection.execute('SELECT * FROM rounds WHERE id = ? FOR UPDATE', [roundId]);
+      if (!rows[0]) throw failure('ROUND_NOT_FOUND', 'Round does not exist.');
+      if (!['waiting', 'active'].includes(rows[0].status)) return { round: roundRow(rows[0]), result: decode(rows[0].result), duplicate: true };
+      await connection.execute("UPDATE rounds SET status = 'finished', result = ?, ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [JSON.stringify(result), roundId]);
+      await connection.execute("UPDATE round_participants SET status = 'finished', result = COALESCE(result, ?), left_at = CURRENT_TIMESTAMP(3) WHERE round_id = ? AND status = 'active'", [JSON.stringify({ reason: 'round-finished' }), roundId]);
+      const [updated] = await connection.execute('SELECT * FROM rounds WHERE id = ?', [roundId]);
+      return { round: roundRow(updated[0]), result: clone(result), duplicate: false };
+    });
+  }
+
+  async abortUnfinishedRounds() {
+    // Explicit host-startup recovery only; opening a second DB connection must
+    // never abort an otherwise running host's rounds.
+    return this.withConnectionTransaction(async connection => {
+      const [rows] = await connection.execute("SELECT id FROM rounds WHERE status IN ('waiting', 'active') FOR UPDATE");
+      const result = JSON.stringify({ reason: 'server-restarted', aborted: true });
+      for (const { id } of rows) {
+        await connection.execute("UPDATE rounds SET status = 'aborted', result = ?, ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [result, id]);
+        await connection.execute("UPDATE round_participants SET status = 'aborted', result = ?, left_at = CURRENT_TIMESTAMP(3) WHERE round_id = ? AND status = 'active'", [result, id]);
+      }
+      return rows.map(row => row.id);
+    });
+  }
+
   async savePlayer(id, state) {
     const next = stateValue(state);
     const [result] = await this.pool.execute('UPDATE players SET state = ?, revision = revision + 1 WHERE id = ?', [JSON.stringify(next), id]);
@@ -124,6 +277,7 @@ export class MySqlStore {
   async transaction(playerId, requestId, operation, action) {
     requestKey(requestId);
     const connection = await this.pool.getConnection();
+    let committing=false;
     try {
       await connection.beginTransaction();
       const [players] = await connection.execute('SELECT state FROM players WHERE id = ? FOR UPDATE', [playerId]);
@@ -139,10 +293,12 @@ export class MySqlStore {
       const payload = { ...response, state: stateValue(state), duplicate: false };
       await connection.execute('UPDATE players SET state = ?, revision = revision + 1 WHERE id = ?', [JSON.stringify(payload.state), playerId]);
       await connection.execute('INSERT INTO player_requests (player_id, request_id, operation, response) VALUES (?, ?, ?, ?)', [playerId, requestId, operation, JSON.stringify(payload)]);
+      committing=true;
       await connection.commit();
       return payload;
     } catch (error) {
-      await connection.rollback();
+      if(committing)error.economyUncertain=true;
+      try{await connection.rollback();}catch{}
       throw error;
     } finally {
       connection.release();

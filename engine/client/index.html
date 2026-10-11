@@ -14,11 +14,12 @@
     </header>
     <main class="workspace">
       <section class="world-view" aria-label="游戏地图">
-        <canvas id="world" tabindex="0" aria-label="地图视图。方向键或 WASD 移动，J 攻击，E 交互，Tab 背包。"></canvas>
+        <canvas id="world" tabindex="0" aria-label="地图视图。单击地面移动，单击角色或物品靠近互动，右键打开或关闭背包。方向键或 WASD 移动，J 攻击，E 交互，Tab 背包。"></canvas>
+        <div id="destination-marker" class="destination-marker" hidden aria-hidden="true"></div>
         <div id="map-loading" class="map-loading" hidden>正在载入地图…</div>
         <div class="world-top"><span id="mode-badge" class="pill">内容与联网测试</span><span id="zone-badge" class="pill danger" hidden></span></div>
         <div id="player-hud" class="player-hud" hidden>
-          <div class="hud-title"><strong id="player-name">探索者</strong><span id="player-level">Lv.1</span></div>
+          <canvas id="player-portrait" width="48" height="48" aria-label="角色脸图"></canvas><div class="hud-title"><strong id="player-name">探索者</strong><span id="player-level">Lv.1</span></div>
           <div class="bar-row"><span>HP</span><div class="bar"><i id="hp-bar"></i></div><small id="hp-text"></small></div>
           <div class="bar-row"><span>MP</span><div class="bar mp"><i id="mp-bar"></i></div><small id="mp-text"></small></div>
         </div>
@@ -30,15 +31,17 @@
       <aside class="sidebar">
         <div class="sidebar-heading"><span class="eyebrow">FIELD TERMINAL</span><h1>探索与生存</h1><p id="session-description">让旧世界，再次运转。</p></div>
         <section class="sidebar-section" id="action-section"><h2>行动</h2><label class="field-label" for="skill-select">当前技能</label><select id="skill-select"><option value="">普通攻击</option></select><div class="action-grid"><button id="attack-button">攻击 <kbd>J</kbd></button><button id="interact-button">交互 <kbd>E</kbd></button><button id="inventory-button">背包 <kbd>Tab</kbd></button><button id="craft-button">合成</button></div><div class="equipment-summary" id="equipment-summary">装备将在进入世界后显示</div></section>
-        <section class="sidebar-section"><div class="section-title"><h2>地图档案</h2><span id="map-count" class="counter">0 张</span></div><select id="map-select" aria-label="测试地图"></select><button id="travel-button" class="wide secondary">载入所选地图</button><p class="hint" id="travel-hint">内容预览不运行战斗或事件。</p><div class="check-row"><label><input type="checkbox" id="grid-toggle">网格</label><label><input type="checkbox" id="region-toggle">区域 ID</label></div><button id="report-button" class="text-button">查看内容兼容报告 ↗</button></section>
+        <section id="instance-section" class="sidebar-section" hidden><div class="section-title"><h2>副本行动</h2><span id="instance-mode" class="counter"></span></div><strong id="instance-phase"></strong><div id="instance-countdown" class="instance-countdown">--:--</div><p id="instance-objective" class="hint"></p><button id="instance-button" class="wide secondary">查看副本状态</button></section>
+        <section id="offline-section" class="sidebar-section"><h2>离线行动</h2><label class="field-label" for="offline-behavior">断开连接后的行动策略</label><select id="offline-behavior" disabled><option value="stay">停留 · 原地等待</option><option value="evade">躲避 · 远离危险</option><option value="search">探物 · 搜集物资</option><option value="hunt">追杀 · 追击敌对目标</option></select><p id="offline-policy" class="hint">原地停留，仍会受到伤害。</p></section>
+        <section id="world-services" class="sidebar-section"><h2>世界服务</h2><p class="hint">单击世界出生点附近的「远征接引员」或「外观调整师」，自动靠近交谈；也可面向 NPC 按 E。</p></section><section class="sidebar-section"><div class="section-title"><h2>地图档案</h2><span id="map-count" class="counter">0 张</span></div><select id="map-select" aria-label="测试地图"></select><button id="travel-button" class="wide secondary">载入所选地图</button><p class="hint" id="travel-hint">内容预览不运行战斗或事件。</p><div class="check-row"><label><input type="checkbox" id="grid-toggle">网格</label><label><input type="checkbox" id="region-toggle">区域 ID</label></div><button id="report-button" class="text-button">查看内容兼容报告 ↗</button></section>
         <section id="dev-section" class="sidebar-section" hidden><div class="section-title"><h2>开发测试</h2><span class="counter">DEV</span></div><div class="dev-actions"><button data-dev="loadout">测试物品与技能</button><button data-dev="spawnEnemies">生成附近敌人</button><button data-dev="zone">启动禁区倒计时</button></div><p class="hint">仅在服务端启用开发工具时可用。</p></section>
         <section class="sidebar-section log-section"><h2>行动记录</h2><ol id="activity-log" aria-live="polite"></ol></section>
-        <footer class="sidebar-footer"><span><kbd>W A S D</kbd> 移动</span><span><kbd>J</kbd> / <kbd>空格</kbd> 攻击</span><span><kbd>E</kbd> 交互 / 拾取</span><button id="logout-button" class="text-button" hidden>退出账号</button></footer>
+        <footer class="sidebar-footer"><span>单击移动 / 互动 · 右键背包</span><span>触屏双指取消</span><span><kbd>W A S D</kbd> 移动</span><span><kbd>J</kbd> / <kbd>空格</kbd> 攻击</span><span><kbd>E</kbd> 交互 / 拾取</span><button id="logout-button" class="text-button" hidden>退出账号</button></footer>
       </aside>
     </main>
     <section id="welcome" class="welcome-overlay">
       <div class="welcome-card"><span class="eyebrow">PROJECT SPACESHIP · REBUILD</span><h1>重新进入<br><em>这个世界。</em></h1><p class="welcome-description">原有地图与素材，全新的世界运行时。<br>探索、交战，或从一张熟悉的地图开始。</p>
-        <form id="login-form"><label for="username">探索者账号</label><input id="username" name="username" autocomplete="username" minlength="2" maxlength="32" required placeholder="输入账号"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="6" maxlength="128" required placeholder="至少 6 位"><div class="login-actions"><button type="submit" id="login-button" disabled>进入世界 →</button><button type="button" id="register-button" disabled class="secondary">创建账号</button></div><p id="login-error" role="alert"></p></form>
+        <form id="login-form"><label for="username">探索者账号</label><input id="username" name="username" autocomplete="username" minlength="3" maxlength="32" required placeholder="输入账号"><label for="password">密码</label><input id="password" name="password" type="password" autocomplete="current-password" minlength="8" maxlength="128" required placeholder="至少 8 位"><div class="login-actions"><button type="submit" id="login-button" disabled>进入世界 →</button><button type="button" id="register-button" disabled class="secondary">创建账号</button></div><p id="login-error" role="alert"></p></form>
         <button id="preview-button" disabled class="preview-button">先浏览现有地图 <span>无需账号 ↗</span></button><p class="welcome-footnote">地图预览不运行服务端战斗、事件与存档。</p>
       </div>
     </section>

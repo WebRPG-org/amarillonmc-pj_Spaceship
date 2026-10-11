@@ -147,11 +147,11 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
     await t.test('authorized attack causes shared death and atomic persistent inventory drops', async () => {
       const afterA = attacker.messages.length, afterB = victim.messages.length;
       attacker.send({ type: 'attack', skillId: 1 });
-      const dead = await victim.snapshot(snapshot => self(snapshot).dead && snapshot.self.inventory.length === 0 && snapshot.drops.some(drop => drop.kind === 'item' && drop.itemId === 1 && drop.quantity === 3), afterB);
-      deathDrop = dead.drops.find(drop => drop.kind === 'item' && drop.itemId === 1 && drop.quantity === 3);
+      const dead = await victim.snapshot(snapshot => self(snapshot).dead && snapshot.self.inventory.length === 0 && snapshot.drops.some(drop => drop.kind === 'bag' && drop.metadata.items.some(item => item.kind === 'item' && item.itemId === 1 && item.quantity === 3)), afterB);
+      deathDrop = dead.drops.find(drop => drop.kind === 'bag');
       const observer = await attacker.snapshot(snapshot => snapshot.players.some(player => player.id === victimAccount.playerId && player.dead) && snapshot.drops.some(drop => drop.id === deathDrop.id), afterA);
       assert.equal(self(dead).hp, 0);
-      assert.equal(observer.drops.find(drop => drop.id === deathDrop.id).quantity, 3);
+      assert.deepEqual(observer.drops.find(drop => drop.id === deathDrop.id).metadata.items, [{kind:'item',itemId:1,quantity:3}]);
       const durable = await store.loadPlayer(victimAccount.playerId);
       assert.equal(durable.state.dead, true);
       assert.equal(durable.state.hp, 0);
@@ -177,7 +177,7 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
     await t.test('logout and HTTP login reconnect recover position, inventory and death state', async () => {
       const before = await attacker.snapshot(snapshot => quantity(snapshot, 'item', 1) === 3);
       await attacker.close(); await victim.close();
-      await eventually(() => app.world.players.size === 0, 'both disconnect saves finish');
+      await eventually(() => [...app.world.players.values()].every(p => !p._connected && !p._disconnecting), 'both disconnect saves finish while characters stay in world');
       const authenticatedA = await session('login', attackerName), authenticatedB = await session('login', victimName);
       assert.equal(authenticatedA.playerId, attackerAccount.playerId);
       attacker = await connectSocket(base, authenticatedA.token); clients.push(attacker);
@@ -224,9 +224,88 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
       t.diagnostic(`All 30 map JSON files loaded; ${transferred} maps accepted server transfer; ${noSpawn} maps correctly reported no walkable spawn.`);
       assert.ok(!app.world.runtimeDiagnostics.has('tick'), 'World loop must not throw while visiting maps.');
     });
+
+    await t.test('Effekseer runtime and effect assets are served with bounded paths and usable MIME types', async () => {
+      const content = await (await fetch(`${base}/api/content`)).json();
+      assert.equal(content.weaponProfiles[61].mode, 'throw');
+      const wasm = await fetch(`${base}/client/vendor/effekseer/effekseer.wasm`, {headers:{Range:'bytes=0-3'}});
+      assert.equal(wasm.status, 206);
+      assert.equal(wasm.headers.get('content-type'), 'application/wasm');
+      assert.deepEqual([...new Uint8Array(await wasm.arrayBuffer())], [0,97,115,109]);
+      const effect = await fetch(`${base}/assets/effects/ArrowSpecial.efkefc`, {headers:{Range:'bytes=0-3'}});
+      assert.equal(effect.status, 206);
+      assert.equal(await effect.text(), 'EFKE');
+      assert.equal((await fetch(`${base}/assets/effects/%2e%2e%2fdata%2fSystem.json`)).status, 403);
+      assert.equal((await fetch(`${base}/assets/effects/Texture/Arrow.png`)).status, 200);
+    });
+
+    await t.test('creator, actor and offline profiles persist together; mouse NPC entry survives instance transitions', async () => {
+      const catalog = await (await fetch(`${base}/api/appearance`)).json();
+      const look = structuredClone(catalog.creator.defaults);
+      look.pieces['Front Hair'].color = 2;
+      let after = attacker.messages.length;
+      attacker.send({type:'appearance',appearance:look});
+      attacker.send({type:'offlineBehavior',behavior:'evade'});
+      await attacker.snapshot(s => s.self.profile?.appearance?.pieces?.['Front Hair']?.color === 2 && s.self.offlineBehavior === 'evade', after);
+      assert.deepEqual((await store.loadProfile(attackerAccount.playerId)).appearance.pieces, look.pieces);
+      assert.equal((await store.loadProfile(attackerAccount.playerId)).offlineBehavior, 'evade');
+      attacker.send({type:'offlineBehavior',behavior:'teleport'});
+      await attacker.wait(m => m.type === 'notice' && /无效的离线/.test(m.message), after);
+      assert.equal((await store.loadProfile(attackerAccount.playerId)).offlineBehavior, 'evade');
+      attacker.send({type:'appearance',appearance:{kind:'creator',pieces:{Body:{id:'../../private',color:0}}}});
+      await attacker.wait(m => m.type === 'notice' && /部件|身体|外观|选项/.test(m.message), after);
+      assert.deepEqual((await store.loadProfile(attackerAccount.playerId)).appearance.pieces, look.pieces);
+
+      // Place the fixture at the actual outside-world NPC, then use only the public protocol.
+      const original = app.host.getPlayer(attackerAccount.playerId);
+      await app.world.transfer(original, 1, 13, 6);
+      const outside = await store.loadPlayer(original.id);
+      after = attacker.messages.length;
+      attacker.send({type:'navigate',x:14,y:6,targetId:'service:instance-guide',contextInstanceId:null,requestId:randomUUID()});
+      await attacker.wait(m => m.type === 'service' && m.service === 'instance', after);
+      attacker.send({type:'instance',action:'create',mode:'pve',contextInstanceId:null});
+      const joined = await attacker.snapshot(s => s.instance?.status === 'waiting' && !!s.self.profile?.appearance, after);
+      const instanceId = joined.instance.id;
+      assert.deepEqual(joined.self.profile.appearance.pieces, look.pieces);
+      assert.equal(joined.self.offlineBehavior, 'evade');
+      assert.equal(quantity(joined,'item',1),0,'Outside items must not enter the round');
+      attacker.send({type:'instance',action:'start',contextInstanceId:instanceId});
+      await attacker.snapshot(s => s.instance?.status === 'active', after);
+      after = attacker.messages.length;
+      attacker.send({type:'travel',mapId:1,contextInstanceId:instanceId});
+      await attacker.wait(m => m.type === 'notice' && /正式副本/.test(m.message), after);
+
+      await attacker.close();
+      await eventually(() => !app.host.getPlayer(original.id)._connected, 'round character stays offline');
+      attacker = await connectSocket(base, attackerAccount.token); clients.push(attacker);
+      const rejoined = await attacker.snapshot(s => s.instance?.id === instanceId);
+      assert.deepEqual(rejoined.self.profile.appearance.pieces, look.pieces);
+      assert.equal(rejoined.self.offlineBehavior, 'evade');
+      assert.equal(rejoined.self.offlineActivity, null, 'Reconnection cancels AI immediately');
+      const actor = catalog.actors.at(-1);
+      after = attacker.messages.length;
+      attacker.send({type:'appearance',appearance:{kind:'actor',actorId:actor.id,characterName:'../../private'}});
+      await attacker.snapshot(s => s.self.profile?.appearance?.actorId === actor.id, after);
+      assert.equal((await store.loadProfile(original.id)).appearance.characterName, actor.characterName);
+      assert.equal((await store.loadProfile(original.id)).offlineBehavior, 'evade');
+      attacker.send({type:'instance',action:'leave',contextInstanceId:instanceId});
+      const returned = await attacker.snapshot(s => !s.instance && s.mapId === 1 && s.self.profile?.appearance?.actorId === actor.id, after);
+      assert.equal(returned.self.profile.appearance.actorId,actor.id);
+      assert.equal(quantity(returned,'item',1),3);
+      assert.equal(returned.self.gold,outside.state.gold);
+      await eventually(() => !app.host.transitions.has(original.id), 'completed departure and prior-round settlement');
+      after = attacker.messages.length;
+      attacker.send({type:'instance',action:'create',mode:'pve',contextInstanceId:null});
+      const second = await attacker.snapshot(s => s.instance?.status === 'waiting' && s.instance.id !== instanceId,after);
+      attacker.send({type:'instance',action:'leave',contextInstanceId:instanceId});
+      await attacker.wait(m => m.type === 'notice' && /世界|副本|过期|失效/.test(m.message),after);
+      assert.equal(app.host.playerWorld(original.id),app.host.rounds.get(second.instance.id).world,'Late prior-round leave must not remove the new player');
+      attacker.send({type:'instance',action:'leave',contextInstanceId:second.instance.id});
+      await attacker.snapshot(s => !s.instance,after);
+    });
   } finally {
     for (const client of clients) if (client.ws.readyState !== WebSocket.CLOSED) await client.close();
-    if (app) { await eventually(() => app.world.players.size === 0, 'final player saves finish'); await app.close(); }
+    if (app) { await eventually(() => [...app.host.players.values()].every(p => !p._connected && !p._disconnecting), 'final player saves finish'); await app.close(); }
     else await store.close();
     // The generated name is never read from a request, user setting, or test output.
     assert.match(schema, /^spaceship_engine_test_[0-9a-f]{12}$/);

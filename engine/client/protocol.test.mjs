@@ -18,3 +18,16 @@ test('zone display never substitutes a browser clock for a missing authoritative
   assert.deepEqual(zoneView({ active: false, startsAt: 10_000 }, 20_000), { visible: true, active: false, seconds: 0 });
   assert.deepEqual(zoneView({ active: true }, 20_000), { visible: true, active: true, seconds: null });
 });
+
+import { sceneKey, withCommandContext } from './protocol.mjs';
+test('same map number in different instances has a separate renderer identity',()=>{
+  assert.notEqual(sceneKey({mapId:11,instance:null}),sceneKey({mapId:11,instance:{id:'round-a'}}));
+  assert.notEqual(sceneKey({mapId:11,instance:{id:'round-a'}}),sceneKey({mapId:11,instance:{id:'round-b'}}));
+  assert.equal(sceneKey({mapId:11,instance:{id:'round-a',remainingSeconds:30}}),sceneKey({mapId:11,instance:{id:'round-a',remainingSeconds:29}}));
+});
+test('ordinary commands carry their source world while join commands keep their target room',()=>{
+  const a={mapId:11,instance:{id:'round-a'}};
+  assert.deepEqual(withCommandContext({type:'pickup',entityId:'bag'},a),{type:'pickup',entityId:'bag',contextInstanceId:'round-a'});
+  assert.deepEqual(withCommandContext({type:'move',direction:2},{instance:null}),{type:'move',direction:2,contextInstanceId:null});
+  assert.deepEqual(withCommandContext({type:'instance',action:'join',instanceId:'round-b'},a),{type:'instance',action:'join',instanceId:'round-b',contextInstanceId:'round-a'});
+});

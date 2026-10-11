@@ -1,5 +1,7 @@
 import { TILE, A3, A4, tileParts, tableEdgeParts, mapTile, isHigher, isTable, characterFrame } from './tile-format.mjs';
-import { zoneView } from './protocol.mjs';
+import { zoneView, sceneKey } from './protocol.mjs';
+import { AppearanceComposer } from './appearance.mjs';
+import { EffekseerLayer } from './effekseer.mjs';
 
 const color = { text: '#f3eee0', blue: '#7ecee3', enemy: '#ef8e79', gold: '#e7c878' };
 export const assetUrl = (folder, name, ext = 'png') => `/assets/${folder}/${encodeURIComponent(name)}.${ext}`;
@@ -26,6 +28,8 @@ export class Renderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.images = new ImageStore();
+    this.appearances = new AppearanceComposer();
+    this.effekseer = new EffekseerLayer({onSound:se=>canvas.dispatchEvent(new CustomEvent('effectaudio',{detail:se})),onError:message=>{this.images.missing.add(message);canvas.dataset.effekseerError=message;}});
     this.entities = new Map();
     this.effects = [];
     this.pictures = new Map();
@@ -44,6 +48,7 @@ export class Renderer {
     this.map = map;
     this.tileset = tileset || {};
     this.database = database || {};
+    this.effekseer.reset();this.effekseer.preload(this.database);
     this.sheets = (tileset?.tilesetNames || []).map(n => this.images.get('img/tilesets', n));
     this.parallax = this.images.get('img/parallaxes', map.parallaxName);
     this.entities.clear();
@@ -52,7 +57,8 @@ export class Renderer {
   }
 
   accept(snapshot) {
-    const sameMap = this.snapshot?.mapId === snapshot.mapId;
+    const sameMap = sceneKey(this.snapshot) === sceneKey(snapshot);
+    if ((this.snapshot?.instance?.id || null) !== (snapshot.instance?.id || null)) this.resetPresentation();
     this.snapshot = snapshot;
     const active = new Set();
     for (const e of [...(snapshot.events || []), ...(snapshot.players || [])]) {
@@ -68,6 +74,12 @@ export class Renderer {
 
   effect(effect) {
     const animation = this.database?.Animations?.[effect.animationId];
+    if(animation?.effectName){
+      this.effekseer.play(animation,effect);
+      // Impact visuals and floating damage/healing are independent layers.
+      if(effect.value!==undefined)this.effects.push({...effect,animation:null,start:performance.now(),duration:650});
+      return;
+    }
     if (animation?.animation1Name) this.images.get('img/animations', animation.animation1Name);
     if (animation?.animation2Name) this.images.get('img/animations', animation.animation2Name);
     this.effects.push({ ...effect, animation, start: performance.now(), duration: animation?.frames?.length ? Math.max(500, animation.frames.length * 1000 / 15) : 650 });
@@ -89,6 +101,7 @@ export class Renderer {
   }
 
   resetPresentation() {
+    this.effekseer.reset();
     this.pictures.clear(); this.effects = []; this.tint = null; this.flash = null;
     this.shake = null; this.fade = null; this.fadeValue = 0;
   }
@@ -158,12 +171,15 @@ export class Renderer {
     }
     this.effects = this.effects.filter(e => time - e.start < e.duration);
     for (const effect of this.effects) this.drawEffect(effect, time);
+    this.effekseer.draw({ctx,width:this.canvas.width,height:this.canvas.height,pixelScale:ratio*this.zoom,point:(x,y)=>this.point(x,y),entity:id=>this.entities.get(id),dt});
+    this.canvas.dataset.effekseer=this.effekseer.status;this.canvas.dataset.effekseerFrames=String(this.effekseer.renderedFrames);
     if (this.showGrid || this.showRegions) for (let y = startY; y < endY; y++) for (let x = startX; x < endX; x++) {
       const p = this.point(x, y), region = mapTile(this.map, x, y, 5);
       if (this.showGrid) { ctx.strokeStyle = '#fff3'; ctx.lineWidth = 1; ctx.strokeRect(p.x, p.y, TILE, TILE); }
       if (this.showRegions && region) { ctx.fillStyle = `hsla(${region * 47 % 360},70%,55%,.30)`; ctx.fillRect(p.x, p.y, TILE, TILE); this.label(String(region), p.x + 24, p.y + 27, '#fff', 12); }
     }
     this.drawPresentation(time, dt, w, h);
+    if (this.portraitCanvas && player?.appearance) this.appearances.preview(this.portraitCanvas, player.appearance, 'face', time);
     ctx.restore();
   }
 
@@ -192,7 +208,7 @@ export class Renderer {
   }
 
   character(e, time) {
-    const image = e.image || e, name = image.characterName || '', isPlayer = !e.image;
+    const image = e.image || e, name = image.characterName || '', isPlayer = !e.image, isService = String(e.id).startsWith('service:');
     if (!name && !image.tileId && !isPlayer && !e.enemyId) return;
     const p = this.point(e.x + .5, e.y + 1), ctx = this.ctx;
     ctx.save();
@@ -201,16 +217,17 @@ export class Renderer {
     if (isPlayer || e.enemyId) { ctx.fillStyle = '#0005'; ctx.beginPath(); ctx.ellipse(p.x, p.y - 3, 13, 5, 0, 0, Math.PI * 2); ctx.fill(); }
     if (image.tileId > 0) this.parts(tileParts(image.tileId, this.tileset.flags), p.x - 24, p.y - 48);
     else {
-      const bitmap = this.images.get('img/characters', name);
+      const composed = e.appearance && this.appearances.get(e.appearance, 'walk');
+      const bitmap = composed || this.images.get('img/characters', name);
       if (bitmap?.ready) {
         const moving = time < e.walkUntil, pattern = moving ? [0, 1, 2, 1][Math.floor(time / 115) % 4] : image.pattern ?? 1;
-        const frame = characterFrame(name, image.characterIndex || 0, pattern, e.direction || 2, bitmap.width, bitmap.height);
+        const frame = characterFrame(composed ? '$created' : name, composed ? 0 : image.characterIndex || 0, pattern, e.direction || 2, bitmap.width, bitmap.height);
         ctx.drawImage(bitmap, frame.sx, frame.sy, frame.sw, frame.sh, Math.round(p.x - frame.sw / 2), Math.round(p.y - frame.sh - frame.shiftY), frame.sw, frame.sh);
       } else if (isPlayer || e.enemyId) { ctx.fillStyle = e.enemyId ? color.enemy : color.blue; ctx.fillRect(p.x - 9, p.y - 30, 18, 27); }
     }
     ctx.restore();
-    if (isPlayer || e.enemyId) {
-      this.label(e.name || (e.enemyId ? '敌人' : '玩家'), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
+    if (isPlayer || e.enemyId || isService) {
+      this.label((e.name || (e.enemyId ? '敌人' : '玩家')) + (isPlayer && e.connected === false ? ' · 离线' : ''), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
       if (e.maxHp) { ctx.fillStyle = '#101918dd'; ctx.fillRect(p.x - 19, p.y - 48, 38, 4); ctx.fillStyle = e.enemyId ? color.enemy : '#98bd99'; ctx.fillRect(p.x - 19, p.y - 48, Math.max(0, Math.min(1, e.hp / e.maxHp)) * 38, 4); }
       if (e.id === this.snapshot.playerId) { ctx.strokeStyle = color.gold; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(p.x, p.y - 2, 18, 7, 0, 0, Math.PI * 2); ctx.stroke(); }
     }
@@ -220,7 +237,9 @@ export class Renderer {
     const p = this.point(drop.x + .5, drop.y + .65), ctx = this.ctx, data = this.item(drop.kind, drop.itemId);
     const icon = this.images.get('img/system', 'IconSet'), bob = Math.sin(time / 250 + drop.x) * 2;
     ctx.strokeStyle = '#e9ca7888'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(p.x, p.y + 11, 14, 5, 0, 0, Math.PI * 2); ctx.stroke();
-    if (icon?.ready && data?.iconIndex) ctx.drawImage(icon, data.iconIndex % 16 * 32, Math.floor(data.iconIndex / 16) * 32, 32, 32, p.x - 12, p.y - 17 + bob, 24, 24);
+    if (drop.kind === 'bag') {
+      ctx.fillStyle='#8b7045';ctx.fillRect(p.x-11,p.y-12+bob,22,23);ctx.strokeStyle='#e8cf88';ctx.lineWidth=2;ctx.strokeRect(p.x-7,p.y-16+bob,14,8);ctx.strokeRect(p.x-11,p.y-12+bob,22,23);this.label('遗落背包',p.x,p.y-25+bob,color.gold,10);
+    } else if (icon?.ready && data?.iconIndex) ctx.drawImage(icon, data.iconIndex % 16 * 32, Math.floor(data.iconIndex / 16) * 32, 32, 32, p.x - 12, p.y - 17 + bob, 24, 24);
     else { ctx.fillStyle = color.gold; ctx.fillRect(p.x - 7, p.y - 9 + bob, 14, 14); }
   }
 

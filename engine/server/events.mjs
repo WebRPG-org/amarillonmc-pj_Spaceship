@@ -67,7 +67,7 @@ export class EventRuntime {
   }
   update(dtSeconds){this.time+=Math.max(0,Math.min(1,finite(dtSeconds)));let budget=this.budgetPerTick;
     for(const player of this.world.players.values()){
-      if(player._connected===false||player.dead||player._dying||player._economyBusy)continue;
+      if(player._connected===false||player.dead||player._dying||player._economyBusy||player._economyUncertain||player._transferring)continue;
       const mapState=this.world.maps.get(player.mapId);if(!mapState)continue;
       for(const event of mapState.events.values()){
         const selected=this.pageFor(player,event);if(!selected)continue;const {page,index}=selected;
@@ -92,7 +92,7 @@ export class EventRuntime {
   }
   run(task,budget){let used=0;const player=this.world.players.get(task.playerId);if(!player){this.finish(task);return used;}
     while(this.tasks.has(task.key)&&!task.waiting&&task.wait<=0&&used<budget){
-      if(player._economyBusy)break;
+      if(player._economyBusy||player._economyUncertain||player._transferring)break;
       if(task.forcedRoute){
         const route=task.forcedRoute,instruction=route.list[route.index++];used++;task.steps++;
         if(task.steps>20000){this.diagnostic(player,'Movement route exceeded instruction budget');this.finish(task);break;}
