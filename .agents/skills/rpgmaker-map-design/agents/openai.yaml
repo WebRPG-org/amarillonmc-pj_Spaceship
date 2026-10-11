@@ -1,0 +1,13 @@
+interface:
+  display_name: RPG Maker MV/MZ 地图设计
+  short_description: 参照现有图块与 Sample，设计有辨识度的动线、场景并检查实机画面
+  default_prompt: 使用 $rpgmaker-map-design，参照项目已有图块和 Sample 地图完成地图设计，先规划空间功能与动线，再铺设图块，并检查实机画面与多地图结构重复。
+  icon_small: assets/icon.svg
+  icon_large: assets/icon.svg
+policy:
+  products:
+  - chatgpt
+  - codex
+  - api
+  - atlas
+  allow_implicit_invocation: true
