@@ -4,6 +4,9 @@
   <meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="theme-color" content="#15231f"><title>Spaceship · 世界试验场</title>
   <link rel="stylesheet" href="/client/style.css">
+  <link rel="stylesheet" href="/client/rich-text.css">
+  <link rel="stylesheet" href="/client/chat.css">
+  <link rel="stylesheet" href="/client/text-ui.css">
 </head>
 <body>
   <div id="app">
@@ -24,7 +27,9 @@
           <div class="bar-row"><span>MP</span><div class="bar mp"><i id="mp-bar"></i></div><small id="mp-text"></small></div>
         </div>
         <div id="death-overlay" class="death-overlay" hidden><span class="eyebrow">行动结束</span><h2>你已倒下</h2><p>世界仍在继续。掉落与死亡结果由服务器结算。</p><button id="respawn-button">返回重生点</button></div>
-        <div id="dialogue" class="dialogue" hidden><strong id="dialogue-speaker"></strong><p id="dialogue-text"></p><div id="dialogue-choices"></div></div>
+        <div id="floating-text" class="floating-text" aria-live="polite"></div>
+        <div id="gab-window" class="gab-window" hidden aria-live="polite"><canvas id="gab-portrait" width="144" height="144" hidden></canvas><div id="gab-text"></div></div>
+        <div id="dialogue" class="dialogue" hidden><strong id="dialogue-speaker"></strong><div class="dialogue-body"><div id="dialogue-face" hidden></div><div id="dialogue-text"></div></div><div id="dialogue-choices"></div></div>
         <div class="world-bottom"><span id="coordinates">—</span><div class="zoom-controls"><button id="zoom-out" title="缩小">−</button><span id="zoom-label">100%</span><button id="zoom-in" title="放大">＋</button></div></div>
         <div id="toast-stack" class="toast-stack" aria-live="polite"></div>
       </section>
@@ -35,6 +40,7 @@
         <section id="offline-section" class="sidebar-section"><h2>离线行动</h2><label class="field-label" for="offline-behavior">断开连接后的行动策略</label><select id="offline-behavior" disabled><option value="stay">停留 · 原地等待</option><option value="evade">躲避 · 远离危险</option><option value="search">探物 · 搜集物资</option><option value="hunt">追杀 · 追击敌对目标</option></select><p id="offline-policy" class="hint">原地停留，仍会受到伤害。</p></section>
         <section id="world-services" class="sidebar-section"><h2>世界服务</h2><p class="hint">远征接引员在榆风广场，外观调整师在中央街区的美容工作室，合成工匠在便利商店。单击 NPC 自动靠近交谈，或面向 NPC 按 E。</p></section><section class="sidebar-section"><div class="section-title"><h2>地图档案</h2><span id="map-count" class="counter">0 张</span></div><select id="map-select" aria-label="测试地图"></select><button id="travel-button" class="wide secondary">载入所选地图</button><p class="hint" id="travel-hint">内容预览不运行战斗或事件。</p><div class="check-row"><label><input type="checkbox" id="grid-toggle">网格</label><label><input type="checkbox" id="region-toggle">区域 ID</label></div><button id="report-button" class="text-button">查看内容兼容报告 ↗</button></section>
         <section id="dev-section" class="sidebar-section" hidden><div class="section-title"><h2>开发测试</h2><span class="counter">DEV</span></div><div class="dev-actions"><button data-dev="loadout">测试物品与技能</button><button data-dev="spawnEnemies">生成附近敌人</button><button data-dev="zone">启动禁区倒计时</button></div><p class="hint">仅在服务端启用开发工具时可用。</p></section>
+        <section id="chat-mount" class="sidebar-section"></section>
         <section class="sidebar-section log-section"><h2>行动记录</h2><ol id="activity-log" aria-live="polite"></ol></section>
         <footer class="sidebar-footer"><span>单击移动 / 互动 · 右键背包</span><span>触屏双指取消</span><span><kbd>W A S D</kbd> 移动</span><span><kbd>J</kbd> / <kbd>空格</kbd> 攻击</span><span><kbd>E</kbd> 交互 / 拾取</span><span>城市图块：(C) 2022 SERIALGAMES Inc.</span><span>室内图块：(C) 2021 Pika&apos;s Game</span><button id="logout-button" class="text-button" hidden>退出账号</button></footer>
       </aside>

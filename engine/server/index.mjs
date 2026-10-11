@@ -25,7 +25,7 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
   const host=new GameHost({content,store,devTools,appearanceCatalog:appearance});
   if(databaseReady)await host.init?.();
   const world=host.world,profileQueues=new Map(),connections=new Map();
-  const publicContent={version:content.version,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId})),database:content.database,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
+  const publicContent={version:content.version,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId})),database:content.database,textConfig:content.textConfig,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');
     try{

@@ -4,6 +4,7 @@ import {addInventory,applyRecipe,computeDamage} from './combat.mjs';
 import {normalizeWeapons,weaponAttack,consumeAttackCost,equippedWeapon} from './weapons.mjs';
 import {OfflineAI,normalizeOfflineBehavior} from './offline-ai.mjs';
 import {MouseNavigation} from './mouse-navigation.mjs';
+import {ChatService,activeChatBubble,chatSettings,CHAT_LIMITS} from './chat.mjs';
 
 export const DIRECTIONS={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
 const persistedKeys=['schemaVersion','publicCityVersion','mapId','x','y','direction','characterName','characterIndex','hp','maxHp','mp','maxMp','level','exp','gold','inventory','skills','equips','switches','variables','selfSwitches','stats','dead','classId','states','ending','paramPlus'];
@@ -16,7 +17,7 @@ const comments=page=>(page?.list||[]).filter(c=>[108,408].includes(c.code)).map(
 export class World {
   constructor({content,store,devTools=false,clock=Date.now,random=Math.random,retainDisconnected=false,hooks={}}) {
     Object.assign(this,{content,store,devTools,clock,random,retainDisconnected,hooks});
-    this.players=new Map();this.connecting=new Set();this.maps=new Map();this.tick=0;this.now=clock();this.lastSave=this.now;
+    this.players=new Map();this.connecting=new Set();this.maps=new Map();this.tick=0;this.now=clock();this.lastSave=this.now;this.chat=new ChatService({clock});
     this.events=new EventRuntime({content,world:this});this.runtimeDiagnostics=new Map();this.offlineAI=new OfflineAI(this);this.navigation=new MouseNavigation(this);
   }
   async ensureMap(id) {
@@ -75,7 +76,7 @@ export class World {
   async disconnect(id) {
     const player=this.players.get(id);if(!player)return;
     if(player._disconnecting)return player._disconnecting;
-    player._connected=false;this.events.cancel?.(player);this.offlineAI.cancel(player);this.navigation.cancel(player);
+    player._connected=false;delete player._chatBubble;this.events.cancel?.(player);this.offlineAI.cancel(player);this.navigation.cancel(player);
     player._disconnecting=(async()=>{await this.flush(player);if(!this.retainDisconnected)this.players.delete(id);})().finally(()=>{delete player._disconnecting;});
     return player._disconnecting;
   }
@@ -106,7 +107,7 @@ export class World {
     return this.enqueue(player,async()=>{
     if(this.hooks.beforeTransfer)this.hooks.beforeTransfer(player,Number(mapId));
     await this.ensureMap(mapId);const spawn=this.content.findSpawn(Number(mapId),x,y);if(!spawn)throw new Error('地图没有可用出生点');
-    player.mapId=Number(mapId);Object.assign(player,spawn);player._lastMove=this.now;this.events.onTransfer?.(player);this.sendSnapshot(player);await this.store.savePlayer(player.id,cloneState(player));
+    delete player._chatBubble;player.mapId=Number(mapId);Object.assign(player,spawn);player._lastMove=this.now;this.events.onTransfer?.(player);this.sendSnapshot(player);await this.store.savePlayer(player.id,cloneState(player));
     });
   }
   spawnTemplate(mapId,sourceMapId,eventId,x,y) {
@@ -354,6 +355,7 @@ export class World {
   async command(player,message) {
     if(!player?._connected||!message||typeof message.type!=='string')return;
     switch(message.type){
+      case'chat':return this.chat.send(this,player,message,{instanceId:this.hooks.snapshot?.(player)?.id||null});
       case'navigate':return this.navigation.set(player,message);
       case'move':this.navigation.cancel(player);return this.move(player,Number(message.direction),message.seq);
       case'attack':return this.attack(player,Number(message.skillId||1),message.requestId||randomUUID());
@@ -398,10 +400,10 @@ export class World {
     const map=this.maps.get(player.mapId);if(!map)return null;
     const eventViews=[];for(const e of map.events.values()){
       const page=this.events.pageFor?.(player,e,map.id);
-      eventViews.push({id:e.id,eventId:e.eventId,name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service});
+      eventViews.push({id:e.id,eventId:e.eventId,name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service,overhead:this.events.overheadFor?.(player,e,page)||null});
     }
-    return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,devTools:this.devTools,pvp:map.pvp,
-      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
+    return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,devTools:this.devTools,pvp:map.pvp,chat:{position:chatSettings(this.content).position,maxLength:CHAT_LIMITS.maxLength},
+      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,chatBubble:activeChatBubble(p,this.clock()),appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
   }
   sendSnapshot(player){const snapshot=this.snapshot(player);if(snapshot)this.send(player.id,snapshot);}
   async close(){for(const id of [...this.players.keys()])await this.detach(id);}

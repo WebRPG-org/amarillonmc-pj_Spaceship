@@ -228,7 +228,7 @@ export class Renderer {
     }
     ctx.restore();
     if (isPlayer || e.enemyId || isService) {
-      this.label((e.name || (e.enemyId ? '敌人' : '玩家')) + (isPlayer && e.connected === false ? ' · 离线' : ''), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
+      if (!e.overhead?.text) this.label((e.name || (e.enemyId ? '敌人' : '玩家')) + (isPlayer && e.connected === false ? ' · 离线' : ''), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
       if (e.maxHp) { ctx.fillStyle = '#101918dd'; ctx.fillRect(p.x - 19, p.y - 48, 38, 4); ctx.fillStyle = e.enemyId ? color.enemy : '#98bd99'; ctx.fillRect(p.x - 19, p.y - 48, Math.max(0, Math.min(1, e.hp / e.maxHp)) * 38, 4); }
       if (e.id === this.snapshot.playerId) { ctx.strokeStyle = color.gold; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(p.x, p.y - 2, 18, 7, 0, 0, Math.PI * 2); ctx.stroke(); }
     }

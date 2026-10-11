@@ -109,6 +109,47 @@ npm run mysql:stop
 - 地图绘制支持标准 48 px 图块，包括 A1 动画、A2 自动地板与桌沿、A3/A4 墙面、A5/B–E 普通图块、阴影、星标遮挡与 `$` / `!` 人物切片。支持 MV 图像帧动画、MZ `.efkefc` 粒子及部分常用事件表现。Effekseer 使用独立 WebGL 画布合入地图画面；无 WebGL 时报告特效失败，战斗结算仍由服务端进行。
 - Effekseer for WebGL v1.52n 的运行库及 MIT 许可位于 [client/vendor/effekseer/](client/vendor/effekseer/)。所选效果来自本地 MZ 样例，来源和依赖记录在 [SOURCE.json](client/vendor/effekseer/SOURCE.json)；效果、纹理和 RPG Maker 素材仍受各自原授权约束，运行库的 MIT 许可不覆盖这些素材。
 
+## 聊天与编辑器文字插件
+
+新引擎已为 `MMO_ChatBox`、`MMO_Overhead`、`MMO_iavra_event_popup`、`YEP_LoadCustomFonts`、`YEP_MessageCore`、`YEP_X_ExtMesPack1/2`、`SRD_ShakingText` 和 `YEP_GabWindow` 提供独立适配。继续在编辑器里编写原注释、插件命令和 Show Text 控制符；参数从 `js/plugins.js` 读取，字体从 `fonts/` 加载。修改后重启引擎并刷新客户端。
+
+**聊天**：Enter 开始输入、Esc 退出、F8 收起／展开。公共频道覆盖副本外在线玩家，地图频道只覆盖当前世界同地图，副本频道只覆盖当前局（等待开局时也可使用）。同地图玩家能看到发送者的短暂头顶气泡；新消息替换旧气泡，转图、断线或到期后清除。每条最多 280 个字符，客户端保留最近 100 条，不存入数据库。玩家输入按普通文字显示，不执行控制符或 HTML。
+
+**事件标签**：有效事件页的注释写 `<Name: 名称>`，增加 `<Is Quest>` 后变黄；名称可带文字控制符。玩家与事件横纵距离均不超过 5 格时显示，跟随位置和页面条件刷新。公共地图也可使用；个人条件页面仍按各自角色选取。
+
+**事件气泡**：插件命令 `EventPopup popup this 欢迎！`，或脚本 `IAVRA.EVENTPOPUP.popup(this.eventId(), "欢迎！", {y: -42, duration: 180});`。目标也可写数字事件 ID。支持字面量选项 `width/x/y/duration/fadeIn/fadeOut/fontName/fontSize/lineHeight`，时间沿用 60 帧／秒。清除用 `EventPopup clear this`（也接受 `clean`）或 `IAVRA.EVENTPOPUP.clear(this.eventId());`；省略目标清除本图气泡。脚本字符串中的控制符要双反斜杠，如 `"\\C[17]欢迎"`。气泡广播到当前世界同地图，副本之间隔离。
+
+**Show Text 控制符**沿用原插件帮助中的写法，大小写不敏感：
+
+| 功能 | 示例与控制符族 |
+| --- | --- |
+| 基础文本 | `\V[1]`、`\N[1]`、`\P[1]`、`\G`、`\I[64]`、`\\` |
+| 字体颜色 | `\C[17]`、`\HC[FFAA00]`、`\OC[3]`、`\OW[2]`、`\FN<HappyZcool-2016>`、`\FS[32]`、`\FB`、`\FI`、`\FR`、`\{`／`\}` |
+| 姓名与头像 | `\N<名称>`、NC／NR／ND／NT 和 1–5 位置变体；`\AF[1]`、`\PF[1]`、`\FaceIndex[2]` |
+| 等待与结束 | `\.`、`\|`、`\W[60]`、`\!`、`\>`／`\<`、`\^`、`\$` |
+| 排版与窗口 | `<WordWrap>`、`<br>`、`<line break>`、PX／PY、MsgPosX／Y、MsgWidth／Rows、Auto、MsgReset、MsgEvent／AutoEvent；事件 0 表示玩家 |
+| 数据库文字 | NC／NI／NW／NA／NS／NT 名称、II／IW／IA／IS／IT 图标名称、AC／AN／PC／PN 职业和昵称、EN／ET 敌人名、DG／Map／Playtime |
+| 数量、属性与条件 | QI／QW／QA、A／E 系列等级和属性、`\Compare<10:5>` 及 1–9 变体、`\CaseSwitch{1?开启:关闭}`、`\CaseEval{v[1] >= 5?足够:不足}` |
+| 文字动画 | `\Shake`、`\Shake[1]`、`\Shake[1,1,3,3]`、`\Wave[0.5,4]`、`\Slide[0.5,4]`、`\Circle`、`\ResetShake` |
+| 逐字音效 | LSOn／LSOff、LSN／LSV／LSPI／LSPIV／LSPA／LSPAV／LSI／LSReset；客户端须先开启声音 |
+
+消息插件命令支持 `MessageRows/MessageWidth`、WordWrap／FastForward 启停、`MessagePositionX/Y` 与 Auto／Reset、`MessageAnchorX/Y`、`LetterSound*` 设置。选项支持 `HideChoice/ShowChoice/DisableChoice/EnableChoice`、对应清除命令、`ChoiceRowMax` 及配置的选项开关；服务端也会拒绝隐藏或禁用的选项。等待和分页只影响当前事件，在线世界持续运行。
+
+**Gab**：依次添加以下插件命令。`ShowGab` 排队，`ForceGab` 立即替换当前显示及队列，`ClearGab` 清空。头像可换为 `GabActorSprite`、`GabFaceName/GabFaceIndex` 或 `GabSpriteName/GabSpriteIndex`；当前角色自定义外观也支持。Gab 是触发玩家自己的界面提示。
+
+```text
+GabText \C[17]\I[64]远征即将开始。
+GabActor 1
+GabSound Bell1
+GabSwitch 12
+ShowGab
+WaitForGab
+```
+
+`GabSwitch 12` 在该条播放完毕后开启角色的 12 号开关，`WaitForGab` 等待队列结束。完成时间由服务端控制。
+
+**边界**：浏览器排版和动画提供等效表现，不保证 MV 的逐像素字形测量或逐帧抖动轨迹。自动换行使用浏览器排版，按行分页作用于显式换行。`CaseEval` 等表达式支持常量、运算、比较、布尔、变量／开关和已提供的角色字段，不执行任意 JavaScript；Popup 脚本参数须为受支持字面量。当前网络角色只有一个受控队员（`GabParty 1`），没有 MV 回合制敌群和完整 Traits 数据；缺失的数据不会伪造，相关控制符保留原文并诊断。Actor／Party 窗口定位适配当前网络角色，战斗敌群定位无对应模型。连续 Show Choices 的自动合并尚未实现。文字诊断可在客户端“查看内容兼容报告”中查看。
+
 ## 修改内容与查看兼容报告
 
 继续用 RPG Maker 编辑仓库中的地图、事件、数据库和素材，保存后**重启新引擎服务**以重新导入，再刷新浏览器。当前没有完整内容热更新或自建远端地图编辑器。素材由 `/assets/` 直接引用原目录；替换同名图片后若浏览器仍显示旧图，可以强制刷新缓存。

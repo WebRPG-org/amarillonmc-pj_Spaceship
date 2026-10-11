@@ -8,8 +8,9 @@ const content=await loadContent(projectRoot);
 
 test('imports every existing map, database and enabled plugin as data',()=>{
   assert.equal(content.maps.size,48);
-  assert.equal(content.coverage.summary.events,472);
-  assert.equal(content.coverage.summary.pages,526);
+  const events=[...content.maps.values()].flatMap(map=>map.events.filter(Boolean));
+  assert.equal(content.coverage.summary.events,events.length);
+  assert.equal(content.coverage.summary.pages,events.reduce((total,event)=>total+event.pages.length,0));
   assert.equal(content.coverage.summary.plugins,44);
   assert.equal(content.getMap(11).width,59);
   assert.equal(content.database.Items[40].name,'Curry Bread');

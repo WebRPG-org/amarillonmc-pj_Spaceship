@@ -3,13 +3,14 @@ import {World} from './world.mjs';
 import {Round,ensureGameContent} from './rounds.mjs';
 import {normalizeOfflineBehavior} from './offline-ai.mjs';
 import {PUBLIC_CITY_SERVICES,bindPublicCityServices,publicCityArrival} from './public-city.mjs';
+import {ChatService} from './chat.mjs';
 
 /** Routes each account to exactly one authoritative world; map ids are local to that world. */
 export class GameHost {
   constructor({content,store,devTools=false,appearanceCatalog=null,clock=Date.now,random=Math.random}){
     Object.assign(this,{content,store,devTools,appearanceCatalog,clock,random});this.scenario=ensureGameContent(content);this.rounds=new Map();this.locations=new Map();this.connecting=new Set();this.transitions=new Map();this._diagnostics=new Map();
     this.world=this.lobbyWorld=new World({content,store,devTools,clock,random,retainDisconnected:true,hooks:{onMapReady:map=>this.decorateLobby(map),onService:(player,event)=>this.serviceOpen(player,event.service.kind)}});
-    this.ready=Promise.resolve();this.initialized=false;
+    this.ready=Promise.resolve();this.initialized=false;this.chat=new ChatService({clock});
   }
   init(){if(!this.initialized){this.initialized=true;this.ready=this.initialize();}return this.ready;}
   async initialize(){if(this.store.abortUnfinishedRounds)await this.store.abortUnfinishedRounds();}
@@ -95,6 +96,7 @@ export class GameHost {
       if(message.action==='leave'){if(!round)throw new Error('尚未加入副本');return round.serialize(()=>this.returnPlayer(round,player,player.dead?'dead':'left'));}
       throw new Error('未知副本操作');
     }
+    if(message.type==='chat')return this.chat.send(this.playerWorld(player.id),player,message,{instanceId:round?.id||null});
     if(message.type==='navigate'&&message.cancel)return this.playerWorld(player.id).navigation.cancel(player);
     if(round){if(round.status!=='active')throw new Error('副本尚未开始或正在结算');if(['respawn','travel','dev'].includes(message.type))throw new Error('正式副本不能重生或使用开发功能');}
     return this.playerWorld(player.id).command(player,message);

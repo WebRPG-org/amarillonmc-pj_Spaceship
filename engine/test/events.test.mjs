@@ -1,6 +1,8 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { EventRuntime, evaluateExpression } from '../server/events.mjs';
+import {classifyScript,classifyCommand} from '../server/content.mjs';
+import {parseTextScript} from '../server/text-events.mjs';
 
 const cmd=(code,parameters=[],indent=0)=>({code,parameters,indent});
 function fixture(list=[],extra={}){
@@ -132,4 +134,85 @@ test('erase event is personal and temporary for the current map visit',()=>{
   assert.equal(f.runtime.pageFor(f.player,f.event),null);assert.ok(f.runtime.pageFor(f.other,f.event));
   assert.deepEqual(f.player.selfSwitches,{});
   f.runtime.onTransfer(f.player);assert.ok(f.runtime.pageFor(f.player,f.event));
+});
+
+test('text adapters retain escape codes, face settings and all lines in small message windows',()=>{
+  const f=fixture([cmd(356,['MessageRows 2']),cmd(356,['MessagePositionX 150']),cmd(356,['MessageAnchorX right']),cmd(356,['EnableWordWrap']),cmd(101,['Actor1',3,1,0]),...['\\C[3]Hello \\V[2]','\\N[1]','\\GOLD','last line'].map(text=>cmd(401,[text]))]);
+  f.player.variables[2]=42;f.runtime.start(f.player,f.event);const message=f.messages.find(m=>m.type==='dialogue'&&!m.close);
+  assert.equal(message.text,'\\C[3]Hello \\V[2]\n\\N[1]\n\\GOLD\nlast line');
+  assert.equal(message.textContext.variables[2],42);assert.equal(message.textContext.actors[1].name,'Explorer');
+  assert.deepEqual([message.messageSettings.faceName,message.messageSettings.faceIndex,message.messageSettings.background,message.messageSettings.positionType],['Actor1',3,1,0]);
+  assert.equal(message.messageSettings.rows,2);assert.equal(message.messageSettings.x,150);assert.equal(message.messageSettings.anchorX,1);assert.equal(message.messageSettings.wordWrap,true);
+  assert.equal(f.runtime.presentation.messageSettings(f.other).rows,4);
+  assert.equal(f.runtime.presentation.messageSettings(f.other).width,null);
+});
+
+test('extended message rows merge compatible text blocks but preserve changed faces',()=>{
+  const f=fixture([cmd(356,['MessageRows 6']),cmd(101,['A',0,0,2]),cmd(401,['one']),cmd(101,['A',0,0,2]),cmd(401,['two']),cmd(101,['B',0,0,2]),cmd(401,['three'])]);
+  f.runtime.start(f.player,f.event);assert.equal(f.messages.at(-1).text,'one\ntwo');
+  f.runtime.choose(f.player,0);assert.equal(f.messages.at(-1).text,'three');assert.equal(f.messages.at(-1).messageSettings.faceName,'B');
+});
+
+test('explicit letter sound commands revise client defaults even when resetting to the same values',()=>{
+  const f=fixture([cmd(356,['EnableLetterSound']),cmd(356,['LetterSoundInterval 0']),cmd(101),cmd(401,['first']),cmd(356,['LetterSoundReset']),cmd(101),cmd(401,['second']),cmd(356,['LetterSoundName Cursor1']),cmd(101),cmd(401,['third'])]);
+  f.runtime.start(f.player,f.event);let settings=f.messages.at(-1).messageSettings;assert.equal(settings.letterSoundRevision,2);assert.equal(settings.letterSound.interval,0);
+  f.runtime.choose(f.player,0);settings=f.messages.at(-1).messageSettings;assert.equal(settings.letterSoundRevision,3);assert.equal(settings.letterSound.enabled,false);assert.equal(settings.letterSound.name,'Cursor1');
+  f.runtime.choose(f.player,0);settings=f.messages.at(-1).messageSettings;assert.equal(settings.letterSoundRevision,4);assert.equal(settings.letterSound.name,'Cursor1');
+});
+
+test('choice visibility and disabled state are enforced by server using original indices',()=>{
+  const f=fixture([cmd(356,['HideChoice 1']),cmd(355,['$gameSystem.disableChoice(2);']),cmd(102,[['Hidden','Disabled','Allowed'],-1,0]),cmd(402,[0]),cmd(125,[0,0,1],1),cmd(402,[1]),cmd(125,[0,0,2],1),cmd(402,[2]),cmd(125,[0,0,4],1),cmd(404)]);
+  f.runtime.start(f.player,f.event);const message=f.messages.at(-1);
+  assert.deepEqual(message.choiceMetadata,[{index:0,hidden:true,disabled:false},{index:1,hidden:false,disabled:true},{index:2,hidden:false,disabled:false}]);
+  assert.equal(f.runtime.choose(f.player,0),false);assert.equal(f.runtime.choose(f.player,1),false);assert.equal(f.runtime.choose(f.player,2),true);assert.equal(f.player.gold,4);
+});
+
+test('cancellation cannot select a hidden or disabled choice but retains separate cancel branches',()=>{
+  for(const plugin of ['HideChoice 1','DisableChoice 1']){
+    const f=fixture([cmd(356,[plugin]),cmd(102,[['Restricted','Allowed'],0,1]),cmd(402,[0]),cmd(125,[0,0,99],1),cmd(402,[1]),cmd(125,[0,0,4],1),cmd(404)]);
+    f.runtime.start(f.player,f.event);assert.equal(f.runtime.choose(f.player,-1),false);assert.equal(f.player.gold,0);assert.equal(f.runtime.dialogues.has(f.player.id),true);
+    assert.equal(f.runtime.choose(f.player,1),true);assert.equal(f.player.gold,4);
+  }
+  const f=fixture([cmd(356,['DisableChoice 1']),cmd(102,[['Restricted'],-2,0]),cmd(402,[0]),cmd(125,[0,0,99],1),cmd(403),cmd(125,[0,0,7],1),cmd(404)]);
+  f.runtime.start(f.player,f.event);assert.equal(f.runtime.choose(f.player,-1),true);assert.equal(f.player.gold,7);
+});
+
+test('overhead comments track the visible page and keep quest styling independent of tag order',()=>{
+  const f=fixture([cmd(108,['<Is Quest>']),cmd(408,['<Name: Guide \\V[2]>'])]);f.player.variables[2]=7;
+  let overhead=f.runtime.overheadFor(f.player,f.event);assert.equal(overhead.text,'Guide \\V[2]');assert.equal(overhead.quest,true);assert.equal(overhead.textContext.variables[2],7);
+  f.event.pages.push({conditions:{switch1Valid:true,switch1Id:3},trigger:0,list:[cmd(108,['<Name: Done>'])]});
+  f.player.switches[3]=true;assert.equal(f.runtime.overheadFor(f.player,f.event).text,'Done');assert.equal(f.runtime.overheadFor(f.other,f.event).text,'Guide \\V[2]');
+  f.event.erased=true;assert.equal(f.runtime.overheadFor(f.player,f.event),null);
+});
+
+test('popup scripts parse literal options and escape strings without evaluating code',()=>{
+  const source=String.raw`IAVRA.EVENTPOPUP.popup(this.eventId(), 'It\'s \\V[2]', {width:75, y:-50, fontSize:10, duration:30, fontName:'Test Font'});`;
+  assert.deepEqual(parseTextScript(source),{kind:'popup',target:'this',text:"It's \\V[2]",options:{width:75,y:-50,fontSize:10,duration:30,fontName:'Test Font'}});
+  assert.equal(classifyScript(source).status,'adapted');
+  for(const source of ['IAVRA.EVENTPOPUP.popup(1, "x", {duration:process.exit()});','IAVRA.EVENTPOPUP.popup(1, "x", {__proto__:1});','IAVRA.EVENTPOPUP.popup(1, "x" + globalThis.PWNED);'])assert.equal(classifyScript(source).status,'unsupported');
+  assert.equal(globalThis.PWNED,undefined);
+});
+
+test('popup targets use dynamic entity IDs, preserve options, and broadcast only map-scoped data',()=>{
+  const f=fixture([cmd(355,['IAVRA.EVENTPOPUP.popup(this.eventId(),']),cmd(655,['"\\\\V[2] \\\\QI[1] \\\\caseSwitch{4?Y:N}", {width:75, duration:30});']),cmd(356,['EventPopup clean this'])]);
+  f.event.id='dynamic:copy';f.player.variables={2:42,99:'private'};f.player.switches={4:true,88:true};f.player.inventory=[{kind:'item',itemId:1,quantity:3},{kind:'item',itemId:2,quantity:9}];
+  const broadcasts=[];f.world.broadcast=(mapId,message)=>broadcasts.push({mapId,...message});
+  f.runtime.start(f.player,f.event);assert.equal(f.notices.length,0);assert.equal(broadcasts.length,2);
+  const popup=broadcasts[0];assert.equal(popup.eventId,'dynamic:copy');assert.equal(popup.mapId,1);assert.equal(popup.options.width,75);assert.equal(popup.options.duration,30);assert.equal(popup.options.fadeOut,60);
+  assert.deepEqual(popup.textContext.variables,{2:42});assert.deepEqual(popup.textContext.switches,{4:true});assert.deepEqual(popup.textContext.inventory,[{kind:'item',itemId:1,quantity:3}]);assert.equal(broadcasts[1].code,'popupClear');
+});
+
+test('Gab queues run on the server, enable completion switches and resume WaitForGab',()=>{
+  const f=fixture([cmd(356,['GabText first']),cmd(356,['GabActorFace 1']),cmd(356,['GabSound Bell1']),cmd(356,['GabSwitch 5']),cmd(356,['ShowGab']),cmd(356,['GabText second']),cmd(356,['GabSwitch 6']),cmd(356,['ShowGab']),cmd(356,['WaitForGab']),cmd(125,[0,0,7])]);
+  f.content.textConfig={gab:{'Base Wait Time':'1','Time Per Character':'0','Fade Rate':'255'}};f.player.appearance={version:1};
+  f.runtime.start(f.player,f.event);let messages=f.messages.filter(m=>m.type==='gab'&&m.action==='show');assert.equal(messages.length,1);assert.equal(messages[0].soundName,'Bell1');assert.deepEqual(messages[0].appearance,{version:1});assert.equal(f.player.gold,0);
+  f.runtime.update(.1);assert.equal(f.player.switches[5],true);assert.equal(f.player.switches[6],undefined);messages=f.messages.filter(m=>m.type==='gab'&&m.action==='show');assert.equal(messages[1].text,'second');
+  f.runtime.update(.1);assert.equal(f.player.switches[6],true);assert.equal(f.player.gold,7);assert.equal(f.runtime.tasks.size,0);
+});
+
+test('ForceGab and ClearGab cancel queued completion switches; repeated gab settings are suppressed',()=>{
+  const f=fixture([cmd(356,['GabText original']),cmd(356,['GabSwitch 5']),cmd(356,['ShowGab']),cmd(356,['GabText original']),cmd(356,['GabSwitch 5']),cmd(356,['ShowGab']),cmd(356,['GabText replacement']),cmd(356,['GabSwitch 6']),cmd(356,['ForceGab']),cmd(356,['ClearGab']),cmd(356,['WaitForGab']),cmd(125,[0,0,2])]);
+  f.runtime.start(f.player,f.event);assert.equal(f.messages.filter(m=>m.type==='gab'&&m.action==='show').length,2);assert.equal(f.player.gold,2);
+  for(let i=0;i<20;i++)f.runtime.update(1);assert.equal(f.player.switches[5],undefined);assert.equal(f.player.switches[6],undefined);
+  assert.equal(classifyCommand(cmd(356,['GabText \\C[2]test'])).status,'adapted');assert.equal(classifyCommand(cmd(356,['UnknownTextPlugin'])).status,'unsupported');
 });

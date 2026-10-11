@@ -3,6 +3,9 @@ import { snapshotPreview } from './tile-format.mjs';
 import { zoneView, withCommandContext } from './protocol.mjs';
 import { AppearanceEditor } from './appearance.mjs';
 import { PointerGesture, pointerCommand, weaponDetails } from './pointer.mjs';
+import { parseRichText, renderRichText, richTextDefaults, applyMessageLayout, loadCustomFonts } from './rich-text.mjs';
+import { FloatingTextLayer } from './floating-text.mjs';
+import { createChatUI } from './chat.mjs';
 
 const $ = id => document.getElementById(id);
 const renderer = new Renderer($('world'));
@@ -12,7 +15,17 @@ const state = { content: null, snapshot: null, mapId: null, preview: true, socke
   token: sessionStorage.getItem('spaceship-token'), maps: new Map(), seq: 0, panel: null,
   reconnect: 0, reconnectTimer: null, sound: false, bgm: null, loading: 0, sessionGeneration: 0, ready: false, keys: new Set(), pendingDialogue: null };
 const requestId = () => crypto.randomUUID();
-const cleanText = text => String(text ?? '').replace(/\\[CcIi]\[\d+\]/g, '').replace(/\\[.!|^<>$]/g, '').replace(/\\[Gg]/g, 'G');
+const textDefaults = () => richTextDefaults(state.content?.textConfig || {});
+const textContext = extra => ({database:{...state.content?.database, MapInfos:Object.fromEntries((state.content?.maps || []).map(map => [map.id,map]))},
+  inventory:state.snapshot?.self?.inventory || [], gold:state.snapshot?.self?.gold || 0,
+  currencyUnit:state.content?.database?.System?.currencyUnit || 'G', mapId:state.mapId, ...extra});
+const cleanText = text => parseRichText(String(text ?? ''), textContext(), textDefaults()).plainText;
+function textDiagnostic(message) { state.textDiagnostics ||= new Set(); state.textDiagnostics.add(typeof message === 'string' ? message : JSON.stringify(message)); }
+const floatingText = new FloatingTextLayer({root:$('floating-text'), gab:$('gab-window'), portrait:$('gab-portrait'), gabText:$('gab-text'),
+  renderer, context:textContext, defaults:textDefaults, config:() => state.content?.textConfig, sound:playAudio, diagnostic:textDiagnostic});
+const chat = createChatUI({mount:$('chat-mount'), send,
+  onFocusChange:focused => {if (focused) {state.keys.clear(); cancelNavigation();}},
+  canFocus:() => $('welcome').hidden && !state.panel && !state.pendingDialogue && !state.preview});
 
 function node(tag, className, text) { const el = document.createElement(tag); if (className) el.className = className; if (text !== undefined) el.textContent = text; return el; }
 
@@ -48,7 +61,7 @@ async function loadMap(id, preview = state.preview) {
     renderer.setMap(map, state.content.database.Tilesets?.[map.tilesetId], state.content.database);
     $('map-name').textContent = `${entry?.name || `地图 ${id}`} · ${map.width} × ${map.height}`;
     $('map-select').value = String(id);
-    if (preview) { state.snapshot = snapshotPreview(map, Number(id)); renderer.accept(state.snapshot); }
+    if (preview) { state.snapshot = snapshotPreview(map, Number(id)); renderer.accept(state.snapshot); floatingText.accept(state.snapshot); }
     else if (state.snapshot?.mapId === Number(id)) renderer.accept(state.snapshot);
     if (map.autoplayBgm && map.bgm?.name) playAudio('bgm', map.bgm);
   } catch (error) { notice(`地图载入失败：${error.message}`, 'error'); }
@@ -110,16 +123,19 @@ async function connect() {
     if (message.type === 'snapshot') {
       if (!state.ready) { state.ready = true; state.reconnect = 0; setConnection('世界已连接', true); }
       const changedWorld = (state.snapshot?.instance?.id || null) !== (message.instance?.id || null);
-      if (changedWorld) { state.keys.clear(); pointer.cancel(); closeDialogue(); renderer.resetPresentation(); renderer.entities.clear(); }
+      if (changedWorld) { state.keys.clear(); pointer.cancel(); closeDialogue(); floatingText.clear(); state.maintainedFont = state.messageSound = null; renderer.resetPresentation(); renderer.entities.clear(); }
       const changed = state.snapshot?.mapId !== message.mapId;
       if (changed) pointer.cancel();
       state.snapshot = message;
+      floatingText.accept(message); chat.updateSnapshot(message); chat.setAvailable(true);
       if (changed || state.mapId !== message.mapId) {
         if (state.requestedMap !== message.mapId) { state.requestedMap = message.mapId; loadMap(message.mapId, false).finally(() => { if (state.requestedMap === message.mapId) state.requestedMap = null; }); }
       } else renderer.accept(message);
       updateHud();
     } else if (message.type === 'effect') renderer.effect(message);
     else if (message.type === 'dialogue') showDialogue(message);
+    else if (message.type === 'chat') chat.receive(message);
+    else if (message.type === 'gab') floatingText.showGab(message);
     else if (message.type === 'audio') playAudio(message.kind, message.audio);
     else if (message.type === 'eventEffect') eventEffect(message);
     else if (message.type === 'openCrafting') openPanel('craft');
@@ -129,7 +145,7 @@ async function connect() {
   };
   ws.onclose = event => {
     if (state.socket !== ws || state.preview || !state.token) return;
-    setConnection('连接已中断'); state.keys.clear(); pointer.cancel(); state.ready = false; closeDialogue();
+    setConnection('连接已中断'); state.keys.clear(); pointer.cancel(); state.ready = false; closeDialogue(); floatingText.clear(); chat.setAvailable(false);
     if ([1008, 4001, 4003, 4401].includes(event.code)) { logout(); $('login-error').textContent = '登录已失效，请重新登录。'; return; }
     scheduleReconnect();
   };
@@ -153,7 +169,8 @@ function logout() {
   $('welcome').hidden = false; $('player-hud').hidden = $('death-overlay').hidden = $('dev-section').hidden = true;
   $('logout-button').hidden = true; closePanel(); closeDialogue(); setConnection('未连接');
   state.instanceService = null; state.instanceResult = null;
-  renderer.resetPresentation(); updateHud();
+  state.maintainedFont = state.messageSound = null;
+  renderer.resetPresentation(); floatingText.clear(); chat.setAvailable(false); chat.clear?.(); updateHud();
   if (state.mapId) loadMap(state.mapId, true);
 }
 
@@ -279,20 +296,70 @@ function renderReport() {
   root.append(node('h3', 'report-section-title', '渲染支持'), node('p', '', 'MV/MZ 标准 48 px 图块：A1 水面与瀑布动画、A2 地板与桌沿、A3/A4 墙面、A5 与 B–E 普通图块、四层地图、阴影、星标遮挡、区域 ID、$ / ! 人物切片、MV 帧动画与 MZ Effekseer 特效。插件专用素材布局仍需单独适配。'));
   if (renderer.images.missing.size) root.append(node('h3', 'report-section-title', '本次预览资源缺失'), node('pre', 'report-pre', [...renderer.images.missing].join('\n')));
   if (state.unhandledEffects?.size) root.append(node('h3', 'report-section-title', '未适配的事件表现命令'), node('pre', 'report-pre', [...state.unhandledEffects].join(', ')));
+  if (state.textDiagnostics?.size) root.append(node('h3', 'report-section-title', '文字控制符诊断'), node('pre', 'report-pre', [...state.textDiagnostics].join('\n')));
   root.append(node('h3', 'report-section-title', '导入器检查结果'), node('pre', 'report-pre', JSON.stringify(coverage, null, 2)));
   if (renderer.map) root.append(node('h3', 'report-section-title', '当前地图'), node('pre', 'report-pre', JSON.stringify({ mapId: state.mapId, tilesetId: renderer.map.tilesetId, width: renderer.map.width, height: renderer.map.height, events: renderer.map.events.filter(Boolean).length, scrollType: renderer.map.scrollType }, null, 2)));
 }
 
-function closeDialogue() { state.pendingDialogue = null; $('dialogue').hidden = true; }
+function closeDialogue() {
+  state.dialogueController?.destroy(); state.dialogueController = null;
+  for (const controller of state.choiceControllers || []) controller.destroy(); state.choiceControllers = [];
+  state.pendingDialogue = null; state.dialogueLayout = null; state.dialogueOptions = []; $('dialogue').hidden = true; $('dialogue').querySelector('.dialogue-gold')?.remove();
+}
+function textTargetPosition(target, context) {
+  const ownActor = context.party?.[0]?.id ?? context.party?.[0];
+  const local = target.kind === 'player' || target.kind === 'event' && target.id <= 0 || target.kind === 'actor' && (target.id === 0 || target.id === ownActor) || target.kind === 'party' && target.id <= 1;
+  const entity = local ? renderer.entities.get(state.snapshot?.playerId) : [...renderer.entities.values()].find(e => target.kind === 'event' && e.eventId === target.id);
+  if (!entity) return null;
+  return {x:(entity.x+.5-renderer.camera.x)*48*renderer.zoom,y:(entity.y-renderer.camera.y)*48*renderer.zoom};
+}
 function showDialogue(message) {
   if (message.close) { closeDialogue(); return; }
-  cancelNavigation(); state.pendingDialogue = message; state.keys.clear(); $('dialogue').hidden = false;
-  $('dialogue-speaker').textContent = message.speaker || '事件'; $('dialogue-text').textContent = cleanText(Array.isArray(message.text) ? message.text.join('\n') : message.text);
+  closeDialogue(); cancelNavigation(); state.pendingDialogue = message; state.keys.clear(); $('dialogue').hidden = false;
+  const configuredDefaults = textDefaults();
+  const context = textContext(message.textContext), defaults = {...configuredDefaults, ...message.messageSettings,resetLetterSound:configuredDefaults.letterSound};
+  if (defaults.maintainFont && state.maintainedFont) Object.assign(defaults,state.maintainedFont);
+  const resetSounds = String(state.content?.textConfig?.extended1?.['Reset Sounds']).toLowerCase() === 'true';
+  const soundSignature = JSON.stringify([defaults.letterSound,message.messageSettings?.letterSoundRevision || 0]);
+  if (resetSounds) defaults.letterSound = configuredDefaults.letterSound;
+  else if (state.messageSound && state.messageSoundSignature === soundSignature) defaults.letterSound = state.messageSound;
+  state.messageSoundSignature = soundSignature;
+  const parsed = parseRichText(Array.isArray(message.text) ? message.text.join('\n') : message.text || '', context, defaults);
+  state.messageSound = parsed.finalSound;
+  if (defaults.maintainFont) state.maintainedFont = {fontFace:parsed.finalStyle.fontFace,fontSize:parsed.finalStyle.fontSize};
+  const settings = message.messageSettings || {};
+  const meta = {faceName:settings.faceName,faceIndex:settings.faceIndex,background:settings.background,position:settings.positionType,
+    width:settings.width,rows:settings.rows,x:settings.x,y:settings.y,anchorX:settings.anchorX,anchorY:settings.anchorY,...parsed.meta};
+  $('dialogue').removeAttribute('style'); $('dialogue').dataset.background = String(meta.background ?? 0);
+  state.dialogueLayout = {meta,context};
+  $('dialogue-speaker').textContent = message.speaker || '事件';
+  applyMessageLayout($('dialogue'), meta, {speakerElement:$('dialogue-speaker'),faceElement:$('dialogue-face'),resolveTarget:target => textTargetPosition(target,context)});
+  if (!parsed.meta.name) $('dialogue-speaker').textContent = message.speaker || '';
   const choices = $('dialogue-choices'); choices.replaceChildren();
-  const options = message.choices?.length ? message.choices : ['继续'];
-  options.forEach((text, i) => { const button = node('button', '', cleanText(text)); button.onclick = () => {
-    if (send({ type: 'dialogue', choice: message.choices?.length ? i : null })) closeDialogue();
-  }; choices.append(button); });
+  choices.style.maxHeight = `${Math.max(1,Math.min(12,settings.choiceRowMax || 6))*48}px`;
+  const advance = node('button', '', '继续'); choices.append(advance);
+  advance.onclick = () => {if (state.dialogueController?.advance()) return; if (!message.choices?.length && send({type:'dialogue',choice:null})) closeDialogue();};
+  const optionButtons = [];
+  (message.choices || []).forEach((text, i) => {
+    const metadata = message.choiceMetadata?.find(c => c.index === i) || {};
+    if (metadata.hidden) return;
+    const button = node('button'); button.disabled = true;
+    state.choiceControllers.push(renderRichText(button, parseRichText(text,context,defaults), {instant:true,onDiagnostic:textDiagnostic}));
+    button.onclick = () => {if (state.dialogueController?.done && send({type:'dialogue',choice:i})) closeDialogue();};
+    choices.append(button); optionButtons.push({button,disabled:metadata.disabled,index:i});
+  });
+  state.dialogueOptions = optionButtons;
+  state.dialogueController = renderRichText($('dialogue-text'), parsed, {context,defaults,
+    onDiagnostic:textDiagnostic, onSound:audio => playAudio('se',typeof audio === 'string' ? {name:audio} : audio),
+    onGold:() => {let gold = $('dialogue').querySelector('.dialogue-gold'); if (!gold) {$('dialogue').append(gold=node('div','dialogue-gold'));} gold.textContent = `${context.gold} ${context.currencyUnit}`;},
+    onComplete:() => queueMicrotask(() => {
+      if (state.pendingDialogue !== message) return;
+      for (const {button,disabled} of optionButtons) button.disabled = !!disabled;
+      advance.hidden = Boolean(message.choices?.length);
+      const selected = optionButtons.find(option => option.index === message.defaultChoice && !option.disabled);
+      selected?.button.focus({preventScroll:true});
+      if (parsed.meta.autoClose && !message.choices?.length && send({type:'dialogue',choice:null})) closeDialogue();
+    })});
 }
 
 function attack() { cancelNavigation(); const id = Number($('skill-select').value); send({ type: 'attack', requestId: requestId(), ...(id > 0 ? { skillId: id } : {}) }); }
@@ -311,6 +378,15 @@ function playAudio(kind, data) {
   if (!data?.name || !state.sound) return;
   const audio = new Audio(assetUrl(`audio/${kind}`, data.name, 'ogg'));
   audio.volume = Math.min(1, Math.max(0, (data.volume ?? 70) / 100 * .5)); audio.playbackRate = (data.pitch || 100) / 100;
+  if (kind === 'se' && Number.isFinite(data.pan) && data.pan !== 0) {
+    const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+    if (AudioContextClass) {
+      state.audioContext ||= new AudioContextClass(); state.audioContext.resume().catch(() => {});
+      const source = state.audioContext.createMediaElementSource(audio), panner = state.audioContext.createStereoPanner();
+      panner.pan.value = Math.max(-1,Math.min(1,data.pan/100)); source.connect(panner); panner.connect(state.audioContext.destination);
+      audio.onended = () => {source.disconnect(); panner.disconnect();};
+    }
+  }
   if (kind === 'bgm' || kind === 'bgs') { const key = kind; state[key]?.pause(); state[key] = audio; audio.loop = true; }
   audio.onerror = () => { if (!audio.src.endsWith('.m4a')) { audio.src = assetUrl(`audio/${kind}`, data.name, 'm4a'); audio.play().catch(() => {}); } };
   audio.play().catch(() => {});
@@ -318,7 +394,7 @@ function playAudio(kind, data) {
 
 function eventEffect(message) {
   const p = message.parameters || [];
-  if (message.code === 'popup') { notice(cleanText(message.text)); return; }
+  if (message.code === 'popup' || message.code === 'popupClear') { floatingText.popup(message); return; }
   if (message.code === 212 || message.code === 213) {
     const target = p[0] === -1 ? me() : state.snapshot?.events?.find(e => e.eventId === (p[0] || message.eventId));
     if (!target) return;
@@ -443,6 +519,10 @@ function drawDestinationMarker() {
     marker.style.left = `${(Number(marker.dataset.x) + .5 - renderer.camera.x) * 48 * renderer.zoom}px`;
     marker.style.top = `${(Number(marker.dataset.y) + .5 - renderer.camera.y) * 48 * renderer.zoom}px`;
   }
+  if (state.dialogueLayout?.meta.target) {
+    const {meta,context} = state.dialogueLayout, pos = textTargetPosition(meta.target,context);
+    if (pos) { $('dialogue').style.left = `${pos.x}px`; $('dialogue').style.top = `${pos.y}px`; }
+  }
   requestAnimationFrame(drawDestinationMarker);
 }
 requestAnimationFrame(drawDestinationMarker);
@@ -453,7 +533,15 @@ window.addEventListener('keydown', event => {
   if (event.code === 'Escape') { event.preventDefault(); if (!event.repeat) cancelOrMenu(); return; }
   if (event.code === 'Tab') { event.preventDefault(); if (state.panel) closePanel(); else openPanel('inventory'); return; }
   if (state.panel) return;
-  if (state.pendingDialogue) { if ((event.code === 'Enter' || event.code === 'KeyE') && !event.repeat && !state.pendingDialogue.choices?.length) $('dialogue-choices').firstElementChild?.click(); return; }
+  if (state.pendingDialogue) {
+    if (!event.repeat && ['ArrowUp','ArrowDown','ArrowLeft','ArrowRight'].includes(event.code) && state.dialogueController?.done) {
+      const options = state.dialogueOptions.filter(option => !option.disabled), selected = options.findIndex(option => option.button === document.activeElement);
+      const next = options[(selected+(['ArrowUp','ArrowLeft'].includes(event.code)?-1:1)+options.length)%options.length];
+      event.preventDefault(); next?.button.focus({preventScroll:true});
+    } else if ((event.code === 'Enter' || event.code === 'KeyE') && !event.repeat && !state.dialogueController?.done) $('dialogue-choices').firstElementChild?.click();
+    else if ((event.code === 'Enter' || event.code === 'KeyE') && !event.repeat && !state.pendingDialogue.choices?.length) $('dialogue-choices').firstElementChild?.click();
+    return;
+  }
   if (directions[event.code]) { event.preventDefault(); if(!event.repeat)cancelNavigation(); state.keys.delete(event.code); state.keys.add(event.code); if(!event.repeat)moveFromKeyboard(); }
   if ((event.code === 'KeyJ' || event.code === 'Space') && !event.repeat) { event.preventDefault(); attack(); }
   if (event.code === 'KeyE' && !event.repeat) { event.preventDefault(); interact(); }
@@ -474,6 +562,7 @@ setInterval(moveFromKeyboard, 150);
 async function initialize() {
   try {
     state.content = await fetchJson('/api/content');
+    loadCustomFonts(state.content.textConfig?.fonts || {}).then(results => {for (const font of results) if (font.error) textDiagnostic(`字体 ${font.filename}：${font.error}`);}).catch(error => textDiagnostic(`字体载入：${error.message}`));
     loadAppearanceCatalog().catch(() => {});
     $('map-select').replaceChildren(...state.content.maps.map(m => new Option(`${String(m.id).padStart(3, '0')} · ${m.name}`, String(m.id))));
     $('map-count').textContent = `${state.content.maps.length} 张`;

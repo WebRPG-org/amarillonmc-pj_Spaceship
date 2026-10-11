@@ -1,6 +1,7 @@
 import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {importWeaponProfiles} from './weapons.mjs';
+import {importTextConfig,isTextPluginCommand,parseTextScript} from './text-events.mjs';
 
 const DATABASES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents', 'System'];
 export const SUPPORTED_COMMANDS = new Set([0,101,102,108,111,112,113,115,117,118,119,121,122,123,124,125,126,127,128,129,135,201,203,205,211,212,213,214,216,221,222,223,224,225,230,231,232,233,234,235,236,241,242,243,244,245,246,249,250,251,261,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,401,402,403,404,408,411,412,413,505]);
@@ -10,6 +11,7 @@ const ADAPTED_PLUGINS = /^(set_actor_(?:skill|item)|CraftingSystem|Composition|O
 /** An allowlist, never an evaluator. The runtime must implement each accepted form. */
 export function classifyScript(script) {
   const s = String(script).trim().replace(/;\s*$/, '');
+  try {if(parseTextScript(s))return {status:'adapted'};}catch(error){return {status:'unsupported',reason:error.message};}
   if (/Input\.|Galv\.|\.prototype\s*\.|\b(?:eval|require|fetch|process|globalThis|window|document)\b/.test(s)) return {status:'unsupported', reason:'Legacy browser/plugin or input script requires migration'};
   const patterns = [
     /^\$gameMap\.copyEventFromMapToRegion\(\s*\d+\s*,\s*\d+\s*,\s*\d+\s*(?:,\s*(?:true|false))?\s*\)$/,
@@ -19,8 +21,7 @@ export function classifyScript(script) {
     /^\$gameParty\.initAllItems\(\)$/,
     /^\$gameMap\._interpreter\.wait\((?:\d+|\$gameVariables\.value\(\d+\))\)$/,
     /^this\.act\((?:\d+|\$gameVariables\.value\(\d+\))\)$/,
-    /^\$gameMap\.event\(this\.eventId\(\)\)\.setDirection\((?:\d+|\$gameVariables\.value\(\d+\))\)$/,
-    /^IAVRA\.EVENTPOPUP\.popup\(this\.eventId\(\),\s*"[^"\n]*",\s*\{[^{}]*\}\)$/
+    /^\$gameMap\.event\(this\.eventId\(\)\)\.setDirection\((?:\d+|\$gameVariables\.value\(\d+\))\)$/
   ];
   return patterns.some(p=>p.test(s)) ? {status:'adapted'} : {status:'unsupported',reason:'Unrecognized JavaScript is preserved but never evaluated'};
 }
@@ -29,6 +30,7 @@ export function classifyCommand(command) {
   if ([355,655].includes(command.code)) return classifyScript(command.parameters?.[0]);
   if (command.code === 356) {
     const name=command.parameters?.[0]||'';
+    if(isTextPluginCommand(name))return {status:'adapted'};
     if(/^(force_damage|tool_turn_end|tool_collision|tool_position|chrono_mode)\b/.test(name))return{status:'limited',reason:'Replaced by server combat; standalone legacy command emits a diagnostic'};
     return ADAPTED_PLUGINS.test(name) ? {status:'adapted'} : {status:'unsupported',reason:'Plugin command has no server adapter'};
   }
@@ -107,8 +109,12 @@ function coverageFor(map,source) {
     const page=event.pages[pageIndex],location={eventId:event.id,page:pageIndex+1};report.pages++;
     // These old networking templates use shared scalar variables as an unreliable command bus.
     if(map.id===26 || (map.id===29&&(page.list||[]).some(c=>/Input\.isTriggered|Galv\./.test(String(c.parameters?.[0]))))){page.engineDisabledReason='Legacy PvP/shared-variable network template replaced by server entities';report.quarantinedPages.push({...location,reason:page.engineDisabledReason});}
+    let continuedScript=null;
     for(let index=0;index<(page.list||[]).length;index++){
-      const command=page.list[index],result=classifyCommand(command);report.commands++;report.counts[command.code]=(report.counts[command.code]||0)+1;report.statuses[result.status]=(report.statuses[result.status]||0)+1;
+      const command=page.list[index];
+      if(command.code===355){let source=command.parameters?.[0]||'';for(let i=index+1;page.list[i]?.code===655;i++)source+='\n'+page.list[i].parameters?.[0];try{continuedScript=parseTextScript(source)?classifyScript(source):null;}catch{continuedScript=classifyScript(source);}}
+      else if(command.code!==655)continuedScript=null;
+      const result=continuedScript&&[355,655].includes(command.code)?continuedScript:classifyCommand(command);report.commands++;report.counts[command.code]=(report.counts[command.code]||0)+1;report.statuses[result.status]=(report.statuses[result.status]||0)+1;
       const entry={...location,index,code:command.code,...result};
       if([355,655].includes(command.code))report.scripts.push({...entry,text:command.parameters[0]});
       if([356,357].includes(command.code))report.plugins.push({...entry,parameters:command.parameters});
@@ -154,5 +160,5 @@ export async function loadContent(projectRoot) {
   }
   function wrapPosition(mapId,x,y){const m=getMap(mapId);if(!m)return{x,y};if([2,3].includes(m.scrollType))x=(x%m.width+m.width)%m.width;if([1,3].includes(m.scrollType))y=(y%m.height+m.height)%m.height;return{x,y};}
   function findSpawn(mapId,x=0,y=0){const map=getMap(mapId);if(!map)return null;x=Math.max(0,Math.min(map.width-1,Math.floor(num(x))));y=Math.max(0,Math.min(map.height-1,Math.floor(num(y))));const seen=new Set(),queue=[[x,y]];for(let i=0;i<queue.length;i++){const [cx,cy]=queue[i],key=`${cx},${cy}`;if(seen.has(key)||!inside(map,cx,cy))continue;seen.add(key);if([2,4,6,8].some(d=>isPassable(mapId,cx,cy,d)))return{x:cx,y:cy};for(const [dx,dy]of [[0,1],[-1,0],[1,0],[0,-1]])queue.push([cx+dx,cy+dy]);}return null;}
-  return {version:1,projectRoot,maps,mapInfos,database,plugins,recipes,weaponProfiles,...imported,coverage,getMap,getTileset,isPassable,findSpawn,wrapPosition,getTool:id=>imported.tools.get(Number(id)),getSkillToolId:id=>imported.skillTools.get(Number(id)),getToolForSkill:id=>imported.tools.get(imported.skillTools.get(Number(id))),getRecipe:id=>recipes.find(r=>r.id===id),describeMap:id=>mapCoverage.find(m=>m.mapId===Number(id))};
+  return {version:1,projectRoot,maps,mapInfos,database,plugins,textConfig:importTextConfig(plugins),recipes,weaponProfiles,...imported,coverage,getMap,getTileset,isPassable,findSpawn,wrapPosition,getTool:id=>imported.tools.get(Number(id)),getSkillToolId:id=>imported.skillTools.get(Number(id)),getToolForSkill:id=>imported.tools.get(imported.skillTools.get(Number(id))),getRecipe:id=>recipes.find(r=>r.id===id),describeMap:id=>mapCoverage.find(m=>m.mapId===Number(id))};
 }

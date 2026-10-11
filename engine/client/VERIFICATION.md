@@ -1,5 +1,16 @@
 # Browser client verification
 
+## Text and chat compatibility verified on 2026-10-11
+
+- Used a separate HTTP/WebSocket application on loopback with an in-memory store and temporary event fixture; no existing MySQL accounts or maps were changed.
+- Two actual browser tabs with distinct temporary accounts received the same public chat. The sender's overhead bubble appeared, and `\C[2] <b>…</b>` remained literal player input.
+- An editor-style event exercised Show Text face/background/position, a colored name box, IconSet icon, variable substitution, HappyZcool font, bold text, Wave/Shake animation, input pause, choices and automatic close. Choices stayed disabled until the post-pause text completed. Gab and event popup appeared independently above the running world.
+- Parser tests cover documented escape families and invalid/unsafe expression diagnostics. The 115 existing Show Text lines have a separate preservation regression; these existing lines contain no backslash escapes, so they are not evidence of plugin-syntax coverage by themselves.
+- Real HTTP/WebSocket tests cover authenticated chat identity, malformed input, bubble snapshots, dialogue context, private Gab and same-map event popup broadcast, with no database dependency. Server tests cover instance isolation and Gab completion switches/waits.
+- The full suite has an existing public-city reachability failure in Map 40 (events 11/12/13) and Map 44 (event 9), also reproduced using HEAD server code and unchanged data. Those unrelated map paths were not changed. This is separate from the text/chat checks.
+
+For an editor smoke test, add `<Name: Text Test>` and `<Is Quest>` comments to an accessible NPC. Put `GabText \C[17]Hello`, `GabActor 1`, `ShowGab`, `EventPopup popup this Hello` before a Show Text command containing `\N<Test>\I[64]\V[1]`, `\FN<HappyZcool-2016>\Wave[0.5,4]Hello\ResetShake`, and `Continue\!after input`. Follow it with choices. Check two accounts on the same map, then separate instances. See the engine README for the supported syntax and model limitations.
+
 ## Verified locally on 2026-10-06
 
 - Actual in-app browser: login, persisted account after server restart, map transfer to Rural and School Hall, tile/character rendering, direction-key taps, existing equipment-repair dialogue and its No branch, imported Curry Bread recipe, and development loadout.

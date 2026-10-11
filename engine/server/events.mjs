@@ -1,4 +1,5 @@
 import { classifyScript, classifyCommand } from './content.mjs';
+import {EventTextPresentation,parseTextScript} from './text-events.mjs';
 
 const finite=(n,fallback=0)=>Number.isFinite(Number(n))?Number(n):fallback;
 const entityId=e=>e.eventId??e.id;
@@ -20,7 +21,7 @@ export function evaluateExpression(source, {variable=()=>0, player={}, random=Ma
 
 /** Server-owned scheduling; waits never depend on a client's scene or frame rate. */
 export class EventRuntime {
-  constructor({content,world}) {this.content=content;this.world=world;this.tasks=new Map();this.dialogues=new Map();this.notified=new Set();this.cooldowns=new Map();this.erasedViews=new Map();this.templateSpawns=new Map();this.time=0;this.sequence=0;this.nextTaskIndex=0;this.budgetPerTask=80;this.budgetPerTick=1200;this.maxTasks=512;}
+  constructor({content,world}) {this.content=content;this.world=world;this.tasks=new Map();this.dialogues=new Map();this.notified=new Set();this.cooldowns=new Map();this.erasedViews=new Map();this.templateSpawns=new Map();this.time=0;this.sequence=0;this.nextTaskIndex=0;this.budgetPerTask=80;this.budgetPerTick=1200;this.maxTasks=512;this.presentation=new EventTextPresentation(this);}
   variable(player,id){return this.world.getVariable?.(player,id)??player?.variables?.[id]??0;}
   switch(player,id){return this.world.getSwitch?.(player,id)??player?.switches?.[id]??false;}
   setVariable(player,id,value){if(!Number.isInteger(+id)||+id<=0||+id>100000)return;value=typeof value==='number'?Math.floor(value):value;if(this.world.setVariable)this.world.setVariable(player,+id,value);else(player.variables??={})[id]=value;}
@@ -55,17 +56,17 @@ export class EventRuntime {
   }
   makeTask(player,event,list,key,pageIndex,automatic){if(this.tasks.size>=this.maxTasks){this.diagnostic(player,'Event task limit reached');return null;}const task={id:++this.sequence,key,playerId:player.id,event,mapId:mapIdOf(player,event),pageIndex,automatic,list,index:0,stack:[],branches:{},choiceBranches:{},wait:0,waiting:null,steps:0};this.tasks.set(key,task);return task;}
   finish(task){this.tasks.delete(task.key);for(const entity of task.claimedEntities||[])if(entity._eventRouteOwner===task.key)delete entity._eventRouteOwner;if(this.dialogues.get(task.playerId)===task){this.dialogues.delete(task.playerId);this.world.send(task.playerId,{type:'dialogue',close:true});}if(task.automatic)this.cooldowns.set(task.key,this.time+.25);}
-  cancel(player){const id=typeof player==='object'?player.id:player;for(const task of [...this.tasks.values()])if(task.playerId===id)this.finish(task);this.dialogues.delete(id);this.erasedViews.delete(id);for(const key of this.cooldowns.keys())if(key.startsWith(`${id}:`))this.cooldowns.delete(key);}
+  cancel(player){const id=typeof player==='object'?player.id:player;for(const task of [...this.tasks.values()])if(task.playerId===id)this.finish(task);this.dialogues.delete(id);this.erasedViews.delete(id);this.presentation.cancel(id);for(const key of this.cooldowns.keys())if(key.startsWith(`${id}:`))this.cooldowns.delete(key);}
   onTransfer(player){this.cancel(player);}
   choose(player,choice){const task=this.dialogues.get(player.id);if(!task)return false;
     if(task.waiting?.kind==='choice'){
       const index=typeof choice==='object'?choice?.index:Number(choice);
-      if(!Number.isInteger(index)||index<0||index>=task.waiting.choices.length){if(index===-1&&task.waiting.cancelType>=0)task.choiceBranches[task.waiting.indent]=task.waiting.cancelType;else if(index===-1&&task.waiting.cancelType===-2)task.choiceBranches[task.waiting.indent]=-2;else return false;}
-      else task.choiceBranches[task.waiting.indent]=index;
+      if(!Number.isInteger(index)||index<0||index>=task.waiting.choices.length){if(index===-1&&task.waiting.cancelType>=0){const target=task.waiting.cancelType,meta=task.waiting.choiceMetadata?.[target];if(target>=task.waiting.choices.length||meta?.hidden||meta?.disabled)return false;task.choiceBranches[task.waiting.indent]=target;}else if(index===-1&&task.waiting.cancelType===-2)task.choiceBranches[task.waiting.indent]=-2;else return false;}
+      else {const meta=task.waiting.choiceMetadata?.[index];if(meta?.hidden||meta?.disabled)return false;task.choiceBranches[task.waiting.indent]=index;}
     }
     task.waiting=null;this.dialogues.delete(player.id);this.world.send(player.id,{type:'dialogue',close:true});this.run(task,this.budgetPerTask);return true;
   }
-  update(dtSeconds){this.time+=Math.max(0,Math.min(1,finite(dtSeconds)));let budget=this.budgetPerTick;
+  update(dtSeconds){this.time+=Math.max(0,Math.min(1,finite(dtSeconds)));this.presentation.update();let budget=this.budgetPerTick;
     for(const player of this.world.players.values()){
       if(player._connected===false||player.dead||player._dying||player._economyBusy||player._economyUncertain||player._transferring)continue;
       const mapState=this.world.maps.get(player.mapId);if(!mapState)continue;
@@ -86,6 +87,7 @@ export class EventRuntime {
       const player=this.world.players.get(task.playerId);if(!player||player.dead||player._dying||player.mapId!==task.mapId){this.finish(task);continue;}if(player._economyBusy)continue;
       if(task.automatic&&task.event.pages){const page=this.pageFor(player,task.event);if(!page||page.index!==task.pageIndex){this.finish(task);continue;}}
       if(task.waiting?.kind==='queued'&&!this.dialogues.has(player.id)){const message=task.waiting.message;task.waiting=null;this.dialogue(task,player,...message);}
+      if(task.waiting?.kind==='gab'&&!this.presentation.gabRunning(player))task.waiting=null;
       if(task.waiting)continue;if(task.wait>0){task.wait=Math.max(0,task.wait-dtSeconds);if(task.wait>0)continue;}
       if(budget<=0){this.nextTaskIndex=index;break;}budget-=this.run(task,Math.min(this.budgetPerTask,budget));
     }
@@ -106,11 +108,14 @@ export class EventRuntime {
     }return used;
   }
   skipTo(task,indent,codes){while(task.index<task.list.length){const c=task.list[task.index];if(c.indent<indent||c.indent===indent&&codes.includes(c.code))return;task.index++;}}
-  text(text,player){return String(text).replace(/\\V\[(\d+)\]/gi,(_,id)=>String(this.variable(player,+id))).replace(/\\N\[(\d+)\]/gi,(_,id)=>this.content.database.Actors?.[id]?.name||player.name).replace(/\\P\[1\]/gi,player.name||'').replace(/\\G/gi,this.content.database.System?.currencyUnit||'Gold');}
-  dialogue(task,player,text,choices,params,indent){
-    if(this.dialogues.has(player.id)&&this.dialogues.get(player.id)!==task){task.waiting={kind:'queued',message:[text,choices,params,indent]};return;}
-    task.waiting=choices?{kind:'choice',choices,cancelType:params?.[1]??-1,indent}:{kind:'text'};this.dialogues.set(player.id,task);
-    this.world.send(player.id,{type:'dialogue',eventId:entityId(task.event),text:this.text(text,player),choices:choices?.map(x=>this.text(x,player)),defaultChoice:params?.[2]??0,cancelType:params?.[1]??-1});
+  text(text){return String(text);}
+  textContext(player,text=null){return this.presentation.textContext(player,text);}
+  overheadFor(player,event,page=this.pageFor(player,event)){return this.presentation.overheadFor(player,event,page);}
+  dialogue(task,player,text,choices,params,indent,messageSettings=this.presentation.messageSettings(player)){
+    if(this.dialogues.has(player.id)&&this.dialogues.get(player.id)!==task){task.waiting={kind:'queued',message:[text,choices,params,indent,messageSettings]};return;}
+    const choiceMetadata=this.presentation.choiceMetadata(player,choices);
+    task.waiting=choices?{kind:'choice',choices,cancelType:params?.[1]??-1,indent,choiceMetadata}:{kind:'text'};this.dialogues.set(player.id,task);
+    this.world.send(player.id,{type:'dialogue',eventId:task.event.id??entityId(task.event),text:this.text(text),choices:choices?.map(x=>this.text(x)),choiceMetadata,defaultChoice:params?.[2]??0,cancelType:params?.[1]??-1,choicePosition:params?.[3]??2,choiceBackground:params?.[4]??0,messageSettings,textContext:this.textContext(player)});
   }
   character(task,player,id){if(id===-1)return player;if(id===0)return task.event;return [...(this.world.maps.get(task.mapId)?.events.values()||[])].find(e=>entityId(e)===id);}
   gameData(task,player,p){const kind=p[4],id=p[5],field=p[6];if(kind<=2)return this.inventory(player,['item','weapon','armor'][kind],id);if(kind===3)return finite(player[['level','exp','hp','mp','maxHp','maxMp'][field]]??player.stats?.[['atk','def','mat','mdf','agi','luk'][field-6]]);if(kind===5){const c=this.character(task,player,id);return finite(c?.[['x','y','direction','screenX','screenY'][field]]);}if(kind===6)return id===0?player.actorId||1:0;if(kind===7)return[task.mapId,1,player.gold||0,player.steps||0,this.time,this.timerRemaining(player),0,0][id]||0;return 0;}
@@ -139,7 +144,17 @@ export class EventRuntime {
   execute(task,player,command){const p=command.parameters||[],indent=command.indent||0;
     switch(command.code){
       case 0:case 108:case 408:case 401:case 505:return;
-      case 101:{const lines=[];while(task.list[task.index]?.code===401)lines.push(task.list[task.index++].parameters[0]);const next=task.list[task.index];if(next?.code===102){task.index++;this.dialogue(task,player,lines.join('\n'),next.parameters[0],next.parameters,next.indent);}else this.dialogue(task,player,lines.join('\n'));return;}
+      case 101:{
+        const lines=[],settings=this.presentation.messageSettings(player,p);
+        do {
+          while(task.list[task.index]?.code===401)lines.push(task.list[task.index++].parameters[0]);
+          const next=task.list[task.index];
+          // Keep the editor's face/background/position boundaries and never discard overflow lines.
+          if(settings.rows<=4||lines.length>=settings.rows||next?.code!==101||JSON.stringify(next.parameters)!==JSON.stringify(p))break;
+          task.index++;
+        }while(true);
+        const next=task.list[task.index];if(next?.code===102){task.index++;this.dialogue(task,player,lines.join('\n'),next.parameters[0],next.parameters,next.indent,settings);}else this.dialogue(task,player,lines.join('\n'),undefined,undefined,undefined,settings);return;
+      }
       case 102:this.dialogue(task,player,'',p[0],p,indent);return;
       case 402:if(task.choiceBranches[indent]!==p[0])this.skipTo(task,indent,[402,403,404]);return;
       case 403:if(task.choiceBranches[indent]!==-2)this.skipTo(task,indent,[404]);return;
@@ -180,7 +195,7 @@ export class EventRuntime {
       case 321:player.classId=p[1];this.refreshPlayer(player);return;
       case 324:player.nickname=p[1];return;
       case 325:player.profile=p[1];return;
-      case 355:{let script=p[0];while(task.list[task.index]?.code===655)script+='\n'+task.list[task.index++].parameters[0];for(const line of script.split(/\r?\n/).filter(x=>x.trim()))this.script(task,player,line,task.event);return;}
+      case 355:{let script=p[0];while(task.list[task.index]?.code===655)script+='\n'+task.list[task.index++].parameters[0];if(parseTextScript(script))this.script(task,player,script,task.event);else for(const line of script.split(/\r?\n/).filter(x=>x.trim()))this.script(task,player,line,task.event);return;}
       case 655:throw new Error('Orphan script continuation');
       case 356:this.plugin(task,player,p[0]);return;
       default:{const status=classifyCommand(command);if(status.status==='presentation'){const parameters=structuredClone(p);if([231,232].includes(command.code)&&parameters[3]===1){parameters[4]=this.variable(player,parameters[4]);parameters[5]=this.variable(player,parameters[5]);parameters[3]=0;}this.world.send(player.id,{type:'eventEffect',code:command.code,parameters,eventId:entityId(task.event)});return;}throw new Error(`Unsupported command ${command.code}`);}
@@ -207,7 +222,7 @@ export class EventRuntime {
     throw new Error(`Unsupported movement route ${command.code}`);
   }
   script(task,player,source,target){const s=String(source).trim().replace(/;\s*$/,'');if(classifyScript(s).status!=='adapted')throw new Error(`Script requires migration: ${s.slice(0,100)}`);
-    let m;
+    const textScript=parseTextScript(s);if(textScript){this.presentation.script(task,player,textScript);return;}let m;
     if((m=s.match(/^\$gameMap\.copyEventFromMapToRegion\(([^)]+)\)$/))){const [sourceMapId,eventId,regionId]=m[1].split(',').map(Number),map=this.content.getMap(task.mapId),tiles=[];for(let y=0;y<map.height;y++)for(let x=0;x<map.width;x++)if(map.data[5*map.width*map.height+y*map.width+x]===regionId)tiles.push({x,y});if(!tiles.length){this.diagnostic(player,`Region ${regionId} has no spawn tiles`,`${task.mapId}:region:${regionId}`);return;}const tile=tiles[Math.floor((this.world.random?.()??Math.random())*tiles.length)];this.spawnTemplate(task,player,sourceMapId,eventId,tile.x,tile.y,`region:${regionId}`);return;}
     if((m=s.match(/^\$gameMap\.copyEventFrom\(([^)]+)\)$/))){const [sourceMapId,eventId,x,y]=m[1].split(',').map(Number);this.spawnTemplate(task,player,sourceMapId,eventId,x,y,`position:${x},${y}`);return;}
     if((m=s.match(/^\$gamePlayer\.(locate|reserveTransfer)\(([^)]+)\)$/))){const values=m[2].split(',').map(Number);if(m[1]==='locate'){const spawn=this.content.findSpawn(player.mapId,...values);if(spawn)Object.assign(player,spawn);}else this.transfer(task,player,values);return;}
@@ -216,12 +231,11 @@ export class EventRuntime {
     if((m=s.match(/^\$gameMap\._interpreter\.wait\((.*)\)$/))){task.wait=this.expression(m[1],player)/60;return;}
     if((m=s.match(/^this\.act\((.*)\)$/))){if(!this.world.useTool)throw new Error('Tool execution unavailable');this.world.useTool(target,this.expression(m[1],player));return;}
     if((m=s.match(/\.setDirection\((.*)\)$/))){task.event.direction=this.expression(m[1],player);return;}
-    if(s.startsWith('IAVRA.EVENTPOPUP.popup')){const match=s.match(/,\s*("(?:\\.|[^"\\])*")/);this.world.send(player.id,{type:'eventEffect',code:'popup',eventId:entityId(task.event),text:match?this.text(JSON.parse(match[1]),player):''});return;}
     throw new Error('Adapter is unavailable');
   }
   transfer(task,player,values){const result=this.world.transfer(player,...values);if(result?.then)Promise.resolve(result).then(()=>this.onTransfer(player),error=>this.diagnostic(player,`Transfer failed: ${error.message}`));else this.onTransfer(player);this.finish(task);}
   spawnTemplate(task,player,sourceMapId,eventId,x,y,location){const key=`${task.mapId}:${sourceMapId}:${eventId}:${location}`,previous=this.templateSpawns.get(key),map=this.world.maps.get(task.mapId);if(previous&&map?.events.has(previous))return;const event=this.world.spawnTemplate(task.mapId,sourceMapId,eventId,x,y);if(event)this.templateSpawns.set(key,event.id);else this.diagnostic(player,`Template ${sourceMapId}/${eventId} is unavailable or quarantined`,key);}
-  plugin(task,player,source){let m;if((m=source.match(/^set_actor_(skill|item)\s*:\s*\d+\s*:\s*(\d+)/i))){player[m[1]==='skill'?'selectedSkill':'selectedItem']=+m[2];this.refreshPlayer(player);return;}
+  plugin(task,player,source){if(this.presentation.plugin(task,player,source))return;let m;if((m=source.match(/^set_actor_(skill|item)\s*:\s*\d+\s*:\s*(\d+)/i))){player[m[1]==='skill'?'selectedSkill':'selectedItem']=+m[2];this.refreshPlayer(player);return;}
     if(/^(CraftingSystem\s+open|Composition)\b/i.test(source)){this.world.send(player.id,{type:'openCrafting',recipes:this.content.recipes});return;}
     if(/^OpenNewWindow\s+/i.test(source)){this.diagnostic(player,`External link: ${source.replace(/^\S+\s+/,'')}`);return;}
     if(/^(force_damage|tool_turn_end|tool_collision|tool_position|chrono_mode)\b/i.test(source)){this.diagnostic(player,`Legacy Chrono command ${source.split(' ')[0]} uses the new server combat implementation`,`chrono:${source.split(' ')[0]}`);return;}
