@@ -7,9 +7,9 @@ const projectRoot=fileURLToPath(new URL('../../',import.meta.url));
 const content=await loadContent(projectRoot);
 
 test('imports every existing map, database and enabled plugin as data',()=>{
-  assert.equal(content.maps.size,30);
-  assert.equal(content.coverage.summary.events,337);
-  assert.equal(content.coverage.summary.pages,391);
+  assert.equal(content.maps.size,39);
+  assert.equal(content.coverage.summary.events,423);
+  assert.equal(content.coverage.summary.pages,477);
   assert.equal(content.coverage.summary.plugins,44);
   assert.equal(content.getMap(11).width,59);
   assert.equal(content.database.Items[40].name,'Curry Bread');

@@ -1,0 +1,327 @@
+{
+  "description": "Nine original layouts assembled from local licensed RMTiles assets. Sample projects used for collision flags, not copied as layouts.",
+  "resourceRoot": "D:/Resources/RM_Resources/RMTiles",
+  "maps": [
+    {
+      "id": 31,
+      "name": "换乘站 · 灰线站厅"
+    },
+    {
+      "id": 32,
+      "name": "地下维护 · 双环管廊"
+    },
+    {
+      "id": 33,
+      "name": "霓虹电玩城"
+    },
+    {
+      "id": 34,
+      "name": "零点夜店"
+    },
+    {
+      "id": 35,
+      "name": "泊岸酒店 · 大堂与客房"
+    },
+    {
+      "id": 36,
+      "name": "学生宿舍 · 生活区"
+    },
+    {
+      "id": 37,
+      "name": "训练中心 · 健身房"
+    },
+    {
+      "id": 38,
+      "name": "蓝湾游泳馆"
+    },
+    {
+      "id": 39,
+      "name": "星幕影院"
+    }
+  ],
+  "tilesets": [
+    {
+      "tilesetId": 31,
+      "key": "Subway",
+      "pack": "RJ01027714",
+      "sample": "RJ01027714/mapchip_subway_samplegame/www/data/Tilesets.json",
+      "sampleTilesetId": 5,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01027714/mapchip_subway/tilesets/Subway_A2.png",
+          "target": "img/tilesets/BR_Subway_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01027714/mapchip_subway/tilesets/Subway_A4.png",
+          "target": "img/tilesets/BR_Subway_A4.png"
+        },
+        {
+          "slot": 4,
+          "source": "RJ01027714/mapchip_subway/tilesets/Subway_A5.png",
+          "target": "img/tilesets/BR_Subway_A5.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01027714/mapchip_subway/tilesets/Subway_B.png",
+          "target": "img/tilesets/BR_Subway_B.png"
+        },
+        {
+          "slot": 6,
+          "source": "RJ01027714/mapchip_subway/tilesets/Subway_C.png",
+          "target": "img/tilesets/BR_Subway_C.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 32,
+      "key": "Underground_Passageway",
+      "pack": "RJ01130991",
+      "sample": "RJ01130991/Underground_Passageway_Sample/www/data/Tilesets.json",
+      "sampleTilesetId": 31,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01130991/Underground_Passageway_Materials/tilesets/Underground_Passageway_A2.png",
+          "target": "img/tilesets/BR_Underground_Passageway_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01130991/Underground_Passageway_Materials/tilesets/Underground_Passageway_A4.png",
+          "target": "img/tilesets/BR_Underground_Passageway_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01130991/Underground_Passageway_Materials/tilesets/Underground_Passageway_B.png",
+          "target": "img/tilesets/BR_Underground_Passageway_B.png"
+        },
+        {
+          "slot": 6,
+          "source": "RJ01130991/Underground_Passageway_Materials/tilesets/Underground_Passageway_C.png",
+          "target": "img/tilesets/BR_Underground_Passageway_C.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 33,
+      "key": "GameCenter",
+      "pack": "RJ01120128",
+      "sample": "RJ01120128/Tileset_GameCenter_game_sample/www/data/Tilesets.json",
+      "sampleTilesetId": 21,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01120128/Tileset_GameCenter_Materials/tilesets/GameCenter_A2.png",
+          "target": "img/tilesets/BR_GameCenter_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01120128/Tileset_GameCenter_Materials/tilesets/GameCenter_A4.png",
+          "target": "img/tilesets/BR_GameCenter_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01120128/Tileset_GameCenter_Materials/tilesets/GameCenter_B.png",
+          "target": "img/tilesets/BR_GameCenter_B.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 34,
+      "key": "NightClub",
+      "pack": "RJ01030634",
+      "sample": "RJ01030634/NightClub_GameSample/www/data/Tilesets.json",
+      "sampleTilesetId": 6,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01030634/material/tilesets/NightClub_A2.png",
+          "target": "img/tilesets/BR_NightClub_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01030634/material/tilesets/NightClub_A4.png",
+          "target": "img/tilesets/BR_NightClub_A4.png"
+        },
+        {
+          "slot": 4,
+          "source": "RJ01030634/material/tilesets/NightClub_A5.png",
+          "target": "img/tilesets/BR_NightClub_A5.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01030634/material/tilesets/NightClub_B.png",
+          "target": "img/tilesets/BR_NightClub_B.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 35,
+      "key": "Hotel",
+      "pack": "RJ01182082",
+      "sample": "RJ01182082/Tileset_Hotel_SampleGame/www/data/Tilesets.json",
+      "sampleTilesetId": 35,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01182082/Tileset_Hotel_Assets/tilesets/Hotel_A2.png",
+          "target": "img/tilesets/BR_Hotel_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01182082/Tileset_Hotel_Assets/tilesets/Hotel_A4.png",
+          "target": "img/tilesets/BR_Hotel_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01182082/Tileset_Hotel_Assets/tilesets/Hotel_B.png",
+          "target": "img/tilesets/BR_Hotel_B.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 36,
+      "key": "gakuseiryou",
+      "pack": "RJ01045102",
+      "sample": "RJ01045102/Tileset_gakuseiryou_game_sample/www/data/Tilesets.json",
+      "sampleTilesetId": 15,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01045102/Tileset_gakuseiryou_materials/tilesets/gakuseiryou_A2.png",
+          "target": "img/tilesets/BR_gakuseiryou_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01045102/Tileset_gakuseiryou_materials/tilesets/gakuseiryou_A4.png",
+          "target": "img/tilesets/BR_gakuseiryou_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01045102/Tileset_gakuseiryou_materials/tilesets/gakuseiryou_B.png",
+          "target": "img/tilesets/BR_gakuseiryou_B.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 37,
+      "key": "Pool",
+      "pack": "RJ01048967",
+      "sample": "RJ01048967/Tileset_poolgym_game_sample/www/data/Tilesets.json",
+      "sampleTilesetId": 16,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        },
+        {
+          "start": 2960,
+          "end": 3007,
+          "reason": "Deep pool: no swimming mechanic in this scenario"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01048967/Tileset_poolgym_materials/tilesets/Pool_A2.png",
+          "target": "img/tilesets/BR_Pool_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01048967/Tileset_poolgym_materials/tilesets/Pool_A4.png",
+          "target": "img/tilesets/BR_Pool_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01048967/Tileset_poolgym_materials/tilesets/Pool_B.png",
+          "target": "img/tilesets/BR_Pool_B.png"
+        }
+      ]
+    },
+    {
+      "tilesetId": 38,
+      "key": "Cinema",
+      "pack": "RJ01331088",
+      "sample": "RJ01331088/Tileset_Cinema_SampleGame/www/data/Tilesets.json",
+      "sampleTilesetId": 42,
+      "collisionOverrides": [
+        {
+          "start": 5888,
+          "end": 5935,
+          "reason": "Cutaway ceiling is a solid map boundary"
+        }
+      ],
+      "assets": [
+        {
+          "slot": 1,
+          "source": "RJ01331088/Tileset_Cinema_Assets/tilesets/Cinema_A2.png",
+          "target": "img/tilesets/BR_Cinema_A2.png"
+        },
+        {
+          "slot": 3,
+          "source": "RJ01331088/Tileset_Cinema_Assets/tilesets/Cinema_A4.png",
+          "target": "img/tilesets/BR_Cinema_A4.png"
+        },
+        {
+          "slot": 5,
+          "source": "RJ01331088/Tileset_Cinema_Assets/tilesets/Cinema_B.png",
+          "target": "img/tilesets/BR_Cinema_B.png"
+        },
+        {
+          "slot": 6,
+          "source": "RJ01331088/Tileset_Cinema_Assets/tilesets/Cinema_C.png",
+          "target": "img/tilesets/BR_Cinema_C.png"
+        },
+        {
+          "slot": 7,
+          "source": "RJ01331088/Tileset_Cinema_Assets/tilesets/Cinema_D.png",
+          "target": "img/tilesets/BR_Cinema_D.png"
+        }
+      ]
+    }
+  ]
+}

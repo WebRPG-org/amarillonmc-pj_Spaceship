@@ -82,7 +82,7 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
     assert.notEqual(app.server.address().port, 8098);
     const health = await (await fetch(`${base}/api/health`)).json();
     assert.equal(health.database, 'ready');
-    assert.equal(health.maps, 30);
+    assert.equal(health.maps, 39);
     const password = 'integration-fixture-password';
     const prefix = `e2e_${randomBytes(5).toString('hex')}`;
     async function session(mode, username) {
@@ -194,9 +194,9 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
       assert.deepEqual(restoredB.self.inventory, []);
     });
 
-    await t.test('all 30 source maps load over HTTP; playable maps transfer and empty maps report no spawn', async () => {
+    await t.test('all 39 source maps load over HTTP; playable maps transfer and empty maps report no spawn', async () => {
       const publicContent = await (await fetch(`${base}/api/content`)).json();
-      assert.equal(publicContent.maps.length, 30);
+      assert.equal(publicContent.maps.length, 39);
       await Promise.all(publicContent.maps.map(async info => {
         const response = await fetch(`${base}/api/maps/${info.id}`);
         assert.equal(response.status, 200, `Map ${info.id} must load.`);
@@ -220,8 +220,8 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
           noSpawn++;
         }
       }
-      assert.equal(transferred + noSpawn, 30);
-      t.diagnostic(`All 30 map JSON files loaded; ${transferred} maps accepted server transfer; ${noSpawn} maps correctly reported no walkable spawn.`);
+      assert.equal(transferred + noSpawn, 39);
+      t.diagnostic(`All 39 map JSON files loaded; ${transferred} maps accepted server transfer; ${noSpawn} maps correctly reported no walkable spawn.`);
       assert.ok(!app.world.runtimeDiagnostics.has('tick'), 'World loop must not throw while visiting maps.');
     });
 

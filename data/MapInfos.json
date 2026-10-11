@@ -29,5 +29,14 @@ null,
 {"id":27,"expanded":true,"name":"Tool Map Reference","order":28,"parentId":0,"scrollX":982.8,"scrollY":553.1999999999999},
 {"id":28,"expanded":false,"name":"Alpha Inactivity Flow Map","order":18,"parentId":11,"scrollX":982.8,"scrollY":553.1999999999999},
 {"id":29,"expanded":false,"name":"Tool Map 2","order":29,"parentId":0,"scrollX":982.8,"scrollY":553.1999999999999},
-{"id":30,"expanded":true,"name":"PVP Map 2","order":30,"parentId":0,"scrollX":982.8,"scrollY":553.1999999999999}
+{"id":30,"expanded":true,"name":"PVP Map 2","order":30,"parentId":0,"scrollX":982.8,"scrollY":553.1999999999999},
+{"id":31,"expanded":false,"name":"换乘站 · 灰线站厅","order":31,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":32,"expanded":false,"name":"地下维护 · 双环管廊","order":32,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":33,"expanded":false,"name":"霓虹电玩城","order":33,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":34,"expanded":false,"name":"零点夜店","order":34,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":35,"expanded":false,"name":"泊岸酒店 · 大堂与客房","order":35,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":36,"expanded":false,"name":"学生宿舍 · 生活区","order":36,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":37,"expanded":false,"name":"训练中心 · 健身房","order":37,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":38,"expanded":false,"name":"蓝湾游泳馆","order":38,"parentId":9,"scrollX":0,"scrollY":0},
+{"id":39,"expanded":false,"name":"星幕影院","order":39,"parentId":9,"scrollX":0,"scrollY":0}
 ]

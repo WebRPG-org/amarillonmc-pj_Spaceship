@@ -208,7 +208,7 @@ export class Renderer {
   }
 
   character(e, time) {
-    const image = e.image || e, name = image.characterName || '', isPlayer = !e.image, isService = String(e.id).startsWith('service:');
+    const image = e.image || e, name = image.characterName || '', isPlayer = !e.image, isService = Boolean(e.service) || String(e.id).startsWith('service:');
     if (!name && !image.tileId && !isPlayer && !e.enemyId) return;
     const p = this.point(e.x + .5, e.y + 1), ctx = this.ctx;
     ctx.save();

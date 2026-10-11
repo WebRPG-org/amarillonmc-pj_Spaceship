@@ -1,7 +1,8 @@
 import {World} from './world.mjs';
 import {addInventory} from './combat.mjs';
+import {MODERN_ROUND_MAPS, MODERN_ZONE_SCHEDULE, isModernRoundMap, modernEventTags, decorateModernDistrict} from './modern-district.mjs';
 
-export const ROUND_MAPS=[11,12,13,20,21,22];
+export const ROUND_MAPS=[11,12,13,20,21,22,...MODERN_ROUND_MAPS];
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
 const has=(p,id)=>p.inventory.some(i=>i.kind==='item'&&i.itemId===id&&i.quantity>0);
 
@@ -25,12 +26,17 @@ function roundContent(content){
   const maps=new Map();
   for(const id of ROUND_MAPS){
     const original=content.getMap(id);if(!original)throw new Error(`副本地图 ${id} 不存在`);
+    if(MODERN_ROUND_MAPS.includes(id)&&!isModernRoundMap(original))throw new Error(`副本地图 ${id} 缺少 <modernRound> 标记`);
     const map={...original,events:original.events.map(event=>{
       if(!event)return null;
       const pages=event.pages.filter(p=>p.list.some(c=>c.code===201&&c.parameters[0]===0&&ROUND_MAPS.includes(c.parameters[1])));
       if(pages.length)return{...event,pages:pages.map(p=>({...p,conditions:{},list:p.list.filter(c=>[0,201,250].includes(c.code))}))};
       // Noninteractive decorations are safe to retain; no old autorun scripts enter a round.
       const page=event.pages.find(p=>p.list.every(c=>[0,108,408].includes(c.code)));
+      if(page&&isModernRoundMap(original)){
+        const tags=modernEventTags(page);
+        if(tags.container||tags.enemy)return{...event,pages:[{...page,conditions:{},trigger:0,list:page.list}]};
+      }
       return page?{...event,pages:[{...page,conditions:{},trigger:0,list:[{code:0,parameters:[]}]}]}:null;
     })};maps.set(id,map);
   }
@@ -64,6 +70,7 @@ export class Round {
   }
   async decorate(map){
     map.pvp=this.mode==='pvpve';
+    decorateModernDistrict(this,map);
     const service=(id,name,x,y,action,extra={})=>addService(this.world,map,{id:`${this.id}:${id}`,name,x,y,service:{kind:'round',action,...extra},characterName:action==='container'?'!Chest':'!Crystal'});
     if(map.id===11){service('exit','共享出口 · 通行证解锁',23,22,'ordinaryExit');service('supply','村口补给箱',24,22,'container',{containerId:'village'});this.containers.set('village',{items:[{kind:'item',itemId:7,quantity:3},{kind:'item',itemId:47,quantity:2},{kind:'item',itemId:48,quantity:2}],opened:false});}
     if(map.id===12){service('key','旅店保管箱 · 通行证',8,13,'container',{containerId:'inn'});this.containers.set('inn',{items:[{kind:'item',itemId:this.scenario.itemIds.ordinary,quantity:1},{kind:'item',itemId:13,quantity:2}],opened:false});}
@@ -86,7 +93,7 @@ export class Round {
     for(const id of ROUND_MAPS)await this.world.ensureMap(id);
     const startedAt=this.clock();await this.store.updateRound(this.id,{status:'active',metadata:{mode:this.mode,startedAt}});
     this.startedAt=startedAt;this.status='active';this.phase='exploration';this.world.paused=false;
-    this.announce('副本开始：旅店寻找通行证，道路寻找组件，村屋控制台可解除普通禁区并开启矿道挑战。');
+    this.announce('副本开始：旅店寻找通行证，道路寻找组件，村屋控制台可解除普通禁区并开启矿道挑战。道路接驳口通往现代城区，可搜刮补给并遭遇巡逻敌人。');
     for(const p of this.world.players.values())this.world.sendSnapshot(p);
   });}
   async interact(player,event){return this.serialize(async()=>{
@@ -126,7 +133,10 @@ export class Round {
     if(this.status==='ending'){if(!this._finishPromise&&this.clock()>=(this.retryFinishAt||0))this.host.finishRound(this,this.pendingResult||{reason:'settlement-retry',success:false}).catch(()=>{});return;}
     if(this.status==='active'){
       const elapsed=this.clock()-this.startedAt;
-      if(!this.ordinaryZonesDisabled){for(const [index,id]of [12,20,21,13,11].entries()){const map=this.world.maps.get(id),startsAt=this.startedAt+(180+index*150)*1000;if(map&&!map.zone&&this.clock()>=startsAt-30000)map.zone={startsAt,endsAt:this.startedAt+this.durationSeconds*1000,damage:8,label:'普通禁区'};}}
+      if(!this.ordinaryZonesDisabled){
+        const schedule=[...[12,20,21,13,11].map((mapId,index)=>({mapId,seconds:180+index*150})),...MODERN_ZONE_SCHEDULE];
+        for(const {mapId,seconds}of schedule){const map=this.world.maps.get(mapId),startsAt=this.startedAt+seconds*1000;if(map&&!map.zone&&this.clock()>=startsAt-30000)map.zone={startsAt,endsAt:this.startedAt+this.durationSeconds*1000,damage:8,label:'普通禁区'};}
+      }
       const allDead=this.world.players.size>0&&[...this.world.players.values()].every(p=>p.dead&&!p._dying);
       if((elapsed>=this.durationSeconds*1000||allDead)&&!this._finishing){this._finishing=this.host.finishRound(this,{reason:allDead?'all-dead':'timeout',success:false}).catch(e=>{this._finishing=null;this.world.runtimeDiagnostics.set('round-finish',e.message);});return;}
     }

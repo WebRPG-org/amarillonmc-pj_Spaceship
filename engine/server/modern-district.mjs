@@ -1,0 +1,67 @@
+/** Authoring contract: map.note contains <modernRound>; event tags are RM comments. */
+export const MODERN_ROUND_MAPS = Object.freeze([31, 32, 33, 34, 35, 36, 37, 38, 39]);
+
+// Keep the original routes' timing. The new districts close in three later waves.
+export const MODERN_ZONE_SCHEDULE = Object.freeze([
+  {mapId: 33, seconds: 360}, {mapId: 34, seconds: 360}, {mapId: 35, seconds: 360},
+  {mapId: 36, seconds: 510}, {mapId: 37, seconds: 510}, {mapId: 38, seconds: 510},
+  {mapId: 39, seconds: 660}, {mapId: 32, seconds: 660}, {mapId: 31, seconds: 660}
+]);
+
+export const isModernRoundMap = map => MODERN_ROUND_MAPS.includes(map.id) && /<modernRound>/i.test(map.note || '');
+
+export function modernEventTags(page) {
+  const text = (page?.list || []).filter(command => [108, 408].includes(command.code)).map(command => command.parameters?.[0] || '').join('\n');
+  return {
+    container: text.match(/^\s*engine_container\s*:\s*(\w+)\s*$/im)?.[1],
+    enemy: text.match(/^\s*engine_enemy\s*:\s*(\w+)\s*$/im)?.[1]
+  };
+}
+
+function weaponProfile(content, mode) {
+  const profile = [...(content.weaponProfiles?.values() || [])].find(entry => entry.mode === mode);
+  if (!profile) throw new Error(`现代区补给缺少 ${mode} 武器定义`);
+  return profile;
+}
+
+function containerItems(content, type) {
+  const item = (itemId, quantity) => ({kind: 'item', itemId, quantity});
+  if (type === 'medical') return [item(7, 2), item(13, 1)];
+  if (type === 'supplies') return [item(47, 2), item(48, 2), item(58, 1), item(59, 1)];
+  if (type === 'ammo') {
+    const firearm = weaponProfile(content, 'firearm');
+    return [item(firearm.ammoItemId, 18), item(14, 1)];
+  }
+  const mode = type.match(/^weapon_(throw|firearm|staff|club)$/)?.[1];
+  if (!mode) throw new Error(`未知现代区补给类型：${type}`);
+  const weapon = weaponProfile(content, mode), items = [{kind: 'weapon', itemId: weapon.weaponId, quantity: 1}];
+  if (weapon.ammoCost) items.push(item(weapon.ammoItemId, 12));
+  if (mode === 'staff') items.push(item(14, 2));
+  else items.push(item(7, 1));
+  return items;
+}
+
+const ENEMIES = {
+  scavenger: {hp: 110, atk: 20, def: 8, mat: 10, mdf: 8, agi: 12, luk: 10},
+  guard: {hp: 180, atk: 28, def: 12, mat: 15, mdf: 12, agi: 10, luk: 10}
+};
+
+/** Convert the authored events in place, preserving their editor-visible positions and images. */
+export function decorateModernDistrict(round, map) {
+  if (!isModernRoundMap(map.raw)) return;
+  for (const event of map.events.values()) {
+    const page = event.pages[0], tags = modernEventTags(page);
+    if (tags.container && tags.enemy) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 同时标记为箱子与敌人`);
+    if (tags.container) {
+      const containerId = `modern:${map.id}:${event.eventId}`;
+      event.service = {kind: 'round', action: 'container', containerId};
+      round.containers.set(containerId, {items: containerItems(round.world.content, tags.container), opened: false});
+    }
+    if (tags.enemy) {
+      const profile = ENEMIES[tags.enemy];
+      if (!profile || !event.enemyId) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 的 engine_enemy 或 enemy_id 无效`);
+      const {hp, ...stats} = profile;
+      Object.assign(event, {name: event.raw.name, noRespawn: true, hp, maxHp: hp, mp: 0, maxMp: 0, stats: {...stats}, customDrops: [{kind: 'item', itemId: tags.enemy === 'guard' ? 14 : 7, quantity: 1}]});
+    }
+  }
+}
