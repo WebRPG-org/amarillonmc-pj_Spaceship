@@ -120,10 +120,11 @@ export class Renderer {
   }
 
   drawLoop(time) {
-    const dt = Math.min(0.1, (time - this.lastTime) / 1000);
+    // Schedule first so a single drawing error cannot stop the render loop.
+    requestAnimationFrame(this.drawLoop);
+    const dt = Math.max(0, Math.min(0.1, (time - this.lastTime) / 1000));
     this.lastTime = time;
     this.draw(time, dt);
-    requestAnimationFrame(this.drawLoop);
   }
 
   draw(time, dt) {
@@ -256,7 +257,8 @@ export class Renderer {
   }
 
   drawEffect(e, time) {
-    const elapsed = time - e.start, t = elapsed / e.duration, p = this.point((e.x || 0) + .5, (e.y || 0) + .5), ctx = this.ctx;
+    // A RAF timestamp can precede performance.now() used by a just-received cue.
+    const elapsed = Math.max(0, time - e.start), t = Math.min(1, elapsed / e.duration), p = this.point((e.x || 0) + .5, (e.y || 0) + .5), ctx = this.ctx;
     ctx.save(); ctx.globalAlpha = Math.max(0, 1 - t);
     if (e.animation?.frames?.length) {
       const cells = e.animation.frames[Math.min(e.animation.frames.length - 1, Math.floor(elapsed * 15 / 1000))];
