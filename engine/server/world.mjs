@@ -5,6 +5,7 @@ import {normalizeWeapons,weaponAttack,consumeAttackCost,equippedWeapon} from './
 import {OfflineAI,normalizeOfflineBehavior} from './offline-ai.mjs';
 import {MouseNavigation} from './mouse-navigation.mjs';
 import {ChatService,activeChatBubble,chatSettings,CHAT_LIMITS} from './chat.mjs';
+import {threeDSnapshot,eventThreeDSource} from './three-d.mjs';
 
 export const DIRECTIONS={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
 const persistedKeys=['schemaVersion','publicCityVersion','mapId','x','y','direction','characterName','characterIndex','hp','maxHp','mp','maxMp','level','exp','gold','inventory','skills','equips','switches','variables','selfSwitches','stats','dead','classId','states','ending','paramPlus'];
@@ -400,9 +401,9 @@ export class World {
     const map=this.maps.get(player.mapId);if(!map)return null;
     const eventViews=[];for(const e of map.events.values()){
       const page=this.events.pageFor?.(player,e,map.id);
-      eventViews.push({id:e.id,eventId:e.eventId,name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service,overhead:this.events.overheadFor?.(player,e,page)||null});
+      eventViews.push({id:e.id,eventId:e.eventId,sourceMapId:e.sourceMapId,pageIndex:page?.index??-1,threeDSource:eventThreeDSource(e,page,map.id),name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service,overhead:this.events.overheadFor?.(player,e,page)||null});
     }
-    return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,devTools:this.devTools,pvp:map.pvp,chat:{position:chatSettings(this.content).position,maxLength:CHAT_LIMITS.maxLength},
+    return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,devTools:this.devTools,pvp:map.pvp,threeD:threeDSnapshot(map.raw,player,this.getVariable.bind(this),eventViews),chat:{position:chatSettings(this.content).position,maxLength:CHAT_LIMITS.maxLength},
       players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,chatBubble:activeChatBubble(p,this.clock()),appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
   }
   sendSnapshot(player){const snapshot=this.snapshot(player);if(snapshot)this.send(player.id,snapshot);}

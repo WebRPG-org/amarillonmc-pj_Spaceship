@@ -123,7 +123,7 @@ export class FloatingTextLayer {
       if (!entry.permanent && opacity <= 0 && time > entry.start+frames(entry.options.fadeIn)) { this.remove(key); continue; }
       entry.node.hidden = scene(this.renderer.snapshot) !== this.scene || !entity || entity.erased || !overheadInRange(entity,self,entry.range);
       if (!entity) continue;
-      const pos = overheadPosition(entity, this.renderer.camera, this.renderer.zoom, entry.options);
+      const pos = this.renderer.entityScreenPoint?.(entity,entry.options) || overheadPosition(entity, this.renderer.camera, this.renderer.zoom, entry.options);
       entry.node.style.left = `${pos.x}px`; entry.node.style.top = `${pos.y}px`; entry.node.style.opacity = String(opacity);
     }
     if (this.gabMessage) {

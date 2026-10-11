@@ -1,5 +1,6 @@
 import { classifyScript, classifyCommand } from './content.mjs';
 import {EventTextPresentation,parseTextScript} from './text-events.mjs';
+import {parseThreeDPluginCommand,resolveThreeDVariables} from './three-d.mjs';
 
 const finite=(n,fallback=0)=>Number.isFinite(Number(n))?Number(n):fallback;
 const entityId=e=>e.eventId??e.id;
@@ -198,6 +199,7 @@ export class EventRuntime {
       case 355:{let script=p[0];while(task.list[task.index]?.code===655)script+='\n'+task.list[task.index++].parameters[0];if(parseTextScript(script))this.script(task,player,script,task.event);else for(const line of script.split(/\r?\n/).filter(x=>x.trim()))this.script(task,player,line,task.event);return;}
       case 655:throw new Error('Orphan script continuation');
       case 356:this.plugin(task,player,p[0]);return;
+      case 357:if(this.threeD(task,player,command))return;throw new Error('Unsupported MZ plugin command');
       default:{const status=classifyCommand(command);if(status.status==='presentation'){const parameters=structuredClone(p);if([231,232].includes(command.code)&&parameters[3]===1){parameters[4]=this.variable(player,parameters[4]);parameters[5]=this.variable(player,parameters[5]);parameters[3]=0;}this.world.send(player.id,{type:'eventEffect',code:command.code,parameters,eventId:entityId(task.event)});return;}throw new Error(`Unsupported command ${command.code}`);}
     }
   }
@@ -235,7 +237,12 @@ export class EventRuntime {
   }
   transfer(task,player,values){const result=this.world.transfer(player,...values);if(result?.then)Promise.resolve(result).then(()=>this.onTransfer(player),error=>this.diagnostic(player,`Transfer failed: ${error.message}`));else this.onTransfer(player);this.finish(task);}
   spawnTemplate(task,player,sourceMapId,eventId,x,y,location){const key=`${task.mapId}:${sourceMapId}:${eventId}:${location}`,previous=this.templateSpawns.get(key),map=this.world.maps.get(task.mapId);if(previous&&map?.events.has(previous))return;const event=this.world.spawnTemplate(task.mapId,sourceMapId,eventId,x,y);if(event)this.templateSpawns.set(key,event.id);else this.diagnostic(player,`Template ${sourceMapId}/${eventId} is unavailable or quarantined`,key);}
-  plugin(task,player,source){if(this.presentation.plugin(task,player,source))return;let m;if((m=source.match(/^set_actor_(skill|item)\s*:\s*\d+\s*:\s*(\d+)/i))){player[m[1]==='skill'?'selectedSkill':'selectedItem']=+m[2];this.refreshPlayer(player);return;}
+  threeD(task,player,command){
+    const commands=parseThreeDPluginCommand(command);if(commands===null)return false;
+    for(const source of commands)this.world.send(player.id,{type:'threeD',mapId:task.mapId,instanceId:this.world.hooks?.snapshot?.(player)?.id||null,eventId:Number(entityId(task.event))||0,entityId:String(task.event.id??entityId(task.event)),command:resolveThreeDVariables(source,id=>this.variable(player,id))});
+    return true;
+  }
+  plugin(task,player,source){if(this.threeD(task,player,{code:356,parameters:[source]}))return;if(this.presentation.plugin(task,player,source))return;let m;if((m=source.match(/^set_actor_(skill|item)\s*:\s*\d+\s*:\s*(\d+)/i))){player[m[1]==='skill'?'selectedSkill':'selectedItem']=+m[2];this.refreshPlayer(player);return;}
     if(/^(CraftingSystem\s+open|Composition)\b/i.test(source)){this.world.send(player.id,{type:'openCrafting',recipes:this.content.recipes});return;}
     if(/^OpenNewWindow\s+/i.test(source)){this.diagnostic(player,`External link: ${source.replace(/^\S+\s+/,'')}`);return;}
     if(/^(force_damage|tool_turn_end|tool_collision|tool_position|chrono_mode)\b/i.test(source)){this.diagnostic(player,`Legacy Chrono command ${source.split(' ')[0]} uses the new server combat implementation`,`chrono:${source.split(' ')[0]}`);return;}

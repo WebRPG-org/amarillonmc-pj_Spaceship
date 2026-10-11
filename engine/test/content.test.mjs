@@ -1,13 +1,15 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
+import { readdir } from 'node:fs/promises';
 import { loadContent, classifyScript } from '../server/content.mjs';
 
 const projectRoot=fileURLToPath(new URL('../../',import.meta.url));
 const content=await loadContent(projectRoot);
+const mapFiles=(await readdir(new URL('../../data/',import.meta.url))).filter(name=>/^Map\d+\.json$/i.test(name));
 
 test('imports every existing map, database and enabled plugin as data',()=>{
-  assert.equal(content.maps.size,48);
+  assert.equal(content.maps.size,mapFiles.length);
   const events=[...content.maps.values()].flatMap(map=>map.events.filter(Boolean));
   assert.equal(content.coverage.summary.events,events.length);
   assert.equal(content.coverage.summary.pages,events.reduce((total,event)=>total+event.pages.length,0));

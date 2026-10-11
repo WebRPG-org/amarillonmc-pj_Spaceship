@@ -2,6 +2,7 @@ import { readFile, readdir } from 'node:fs/promises';
 import path from 'node:path';
 import {importWeaponProfiles} from './weapons.mjs';
 import {importTextConfig,isTextPluginCommand,parseTextScript} from './text-events.mjs';
+import {importThreeD,mapThreeD,parseThreeDPluginCommand} from './three-d.mjs';
 
 const DATABASES = ['Actors', 'Classes', 'Skills', 'Items', 'Weapons', 'Armors', 'Enemies', 'Troops', 'States', 'Animations', 'Tilesets', 'CommonEvents', 'System'];
 export const SUPPORTED_COMMANDS = new Set([0,101,102,108,111,112,113,115,117,118,119,121,122,123,124,125,126,127,128,129,135,201,203,205,211,212,213,214,216,221,222,223,224,225,230,231,232,233,234,235,236,241,242,243,244,245,246,249,250,251,261,311,312,313,314,315,316,317,318,319,320,321,322,323,324,325,401,402,403,404,408,411,412,413,505]);
@@ -28,6 +29,10 @@ export function classifyScript(script) {
 
 export function classifyCommand(command) {
   if ([355,655].includes(command.code)) return classifyScript(command.parameters?.[0]);
+  if ([356,357].includes(command.code)) {
+    try {if(parseThreeDPluginCommand(command)!==null)return {status:'presentation',reason:'Allowlisted MV3D/MZ3D visual commands forwarded to the 0.9.2.8 render host'};}
+    catch(error){return {status:'unsupported',reason:error.message};}
+  }
   if (command.code === 356) {
     const name=command.parameters?.[0]||'';
     if(isTextPluginCommand(name))return {status:'adapted'};
@@ -139,6 +144,8 @@ export async function loadContent(projectRoot) {
     if(!match)throw new Error('Expected RPG Maker JSON plugin declaration');
     plugins=JSON.parse(match[1]);
   }catch(error){diagnostics.push({source:'js/plugins.js',reason:error.message});}
+  const threeD=importThreeD(plugins);
+  for(const map of maps.values())map.threeD=mapThreeD(map,database.Tilesets?.[map.tilesetId],threeD);
   const imported=importTools(maps,plugins,database),recipes=importRecipes(database,plugins,diagnostics),weaponProfiles=importWeaponProfiles(database);
   const mapCoverage=[...maps.values()].map(map=>coverageFor(map,`Map${String(map.id).padStart(3,'0')}.json`));
   const commonCoverage=coverageFor({events:(database.CommonEvents||[]).filter(Boolean).map(e=>({...e,pages:[{list:e.list}]}))},'CommonEvents.json');
@@ -160,5 +167,5 @@ export async function loadContent(projectRoot) {
   }
   function wrapPosition(mapId,x,y){const m=getMap(mapId);if(!m)return{x,y};if([2,3].includes(m.scrollType))x=(x%m.width+m.width)%m.width;if([1,3].includes(m.scrollType))y=(y%m.height+m.height)%m.height;return{x,y};}
   function findSpawn(mapId,x=0,y=0){const map=getMap(mapId);if(!map)return null;x=Math.max(0,Math.min(map.width-1,Math.floor(num(x))));y=Math.max(0,Math.min(map.height-1,Math.floor(num(y))));const seen=new Set(),queue=[[x,y]];for(let i=0;i<queue.length;i++){const [cx,cy]=queue[i],key=`${cx},${cy}`;if(seen.has(key)||!inside(map,cx,cy))continue;seen.add(key);if([2,4,6,8].some(d=>isPassable(mapId,cx,cy,d)))return{x:cx,y:cy};for(const [dx,dy]of [[0,1],[-1,0],[1,0],[0,-1]])queue.push([cx+dx,cy+dy]);}return null;}
-  return {version:1,projectRoot,maps,mapInfos,database,plugins,textConfig:importTextConfig(plugins),recipes,weaponProfiles,...imported,coverage,getMap,getTileset,isPassable,findSpawn,wrapPosition,getTool:id=>imported.tools.get(Number(id)),getSkillToolId:id=>imported.skillTools.get(Number(id)),getToolForSkill:id=>imported.tools.get(imported.skillTools.get(Number(id))),getRecipe:id=>recipes.find(r=>r.id===id),describeMap:id=>mapCoverage.find(m=>m.mapId===Number(id))};
+  return {version:1,projectRoot,maps,mapInfos,database,plugins,threeD,textConfig:importTextConfig(plugins),recipes,weaponProfiles,...imported,coverage,getMap,getTileset,isPassable,findSpawn,wrapPosition,getTool:id=>imported.tools.get(Number(id)),getSkillToolId:id=>imported.skillTools.get(Number(id)),getToolForSkill:id=>imported.tools.get(imported.skillTools.get(Number(id))),getRecipe:id=>recipes.find(r=>r.id===id),describeMap:id=>mapCoverage.find(m=>m.mapId===Number(id))};
 }

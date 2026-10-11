@@ -52,20 +52,24 @@ function send(message) {
 
 async function loadMap(id, preview = state.preview) {
   const generation = ++state.loading, sessionGeneration = state.sessionGeneration;
+  state.loadingTarget=Number(id);
   $('map-loading').hidden = false;
   try {
     if (!state.maps.has(id)) state.maps.set(id, await fetchJson(`/api/maps/${id}`));
     if (generation !== state.loading || sessionGeneration !== state.sessionGeneration) return;
     const map = state.maps.get(id), entry = state.content.maps.find(m => Number(m.id) === Number(id));
     state.mapId = Number(id);
-    renderer.setMap(map, state.content.database.Tilesets?.[map.tilesetId], state.content.database);
+    renderer.setMap(map, state.content.database.Tilesets?.[map.tilesetId], state.content.database, state.content.threeD);
     $('map-name').textContent = `${entry?.name || `地图 ${id}`} · ${map.width} × ${map.height}`;
     $('map-select').value = String(id);
     if (preview) { state.snapshot = snapshotPreview(map, Number(id)); renderer.accept(state.snapshot); floatingText.accept(state.snapshot); }
     else if (state.snapshot?.mapId === Number(id)) renderer.accept(state.snapshot);
+    for(const message of state.threeDCommands||[])if(Number(message.mapId)===Number(id))renderer.threeDCommand(message);
+    state.threeDCommands=[];
+    $('three-d-controls').hidden = !renderer.threeD.enabled;
     if (map.autoplayBgm && map.bgm?.name) playAudio('bgm', map.bgm);
   } catch (error) { notice(`地图载入失败：${error.message}`, 'error'); }
-  finally { if (generation === state.loading) $('map-loading').hidden = true; }
+  finally { if (generation === state.loading) {state.loadingTarget=null;$('map-loading').hidden = true;} }
 }
 
 function setConnection(label, online = false) {
@@ -123,8 +127,8 @@ async function connect() {
     if (message.type === 'snapshot') {
       if (!state.ready) { state.ready = true; state.reconnect = 0; setConnection('世界已连接', true); }
       const changedWorld = (state.snapshot?.instance?.id || null) !== (message.instance?.id || null);
-      if (changedWorld) { state.keys.clear(); pointer.cancel(); closeDialogue(); floatingText.clear(); state.maintainedFont = state.messageSound = null; renderer.resetPresentation(); renderer.entities.clear(); }
-      const changed = state.snapshot?.mapId !== message.mapId;
+      if (changedWorld) { state.keys.clear(); pointer.cancel(); closeDialogue(); floatingText.clear(); state.threeDCommands=[]; state.maintainedFont = state.messageSound = null; renderer.resetPresentation(); renderer.entities.clear(); }
+      const changed = changedWorld || state.snapshot?.mapId !== message.mapId;
       if (changed) pointer.cancel();
       state.snapshot = message;
       floatingText.accept(message); chat.updateSnapshot(message); chat.setAvailable(true);
@@ -138,6 +142,11 @@ async function connect() {
     else if (message.type === 'gab') floatingText.showGab(message);
     else if (message.type === 'audio') playAudio(message.kind, message.audio);
     else if (message.type === 'eventEffect') eventEffect(message);
+    else if (message.type === 'threeD') {
+      if(state.loadingTarget!=null||Number(message.mapId)!==Number(renderer.map?.id)){
+        (state.threeDCommands||=[]).push(message);if(state.threeDCommands.length>100)state.threeDCommands.shift();
+      }else{renderer.threeDCommand(message);$('three-d-controls').hidden=!renderer.threeD.enabled;}
+    }
     else if (message.type === 'openCrafting') openPanel('craft');
     else if (message.type === 'service') receiveService(message);
     else if (message.type === 'instanceResult') { state.instanceResult = message.result; openPanel('result'); }
@@ -164,6 +173,7 @@ async function authenticate(mode) {
 }
 
 function logout() {
+  state.threeDCommands=[];
   clearTimeout(state.reconnectTimer); state.sessionGeneration++; state.ready = false; state.reconnect = 0; state.keys.clear(); state.preview = true; state.token = null; state.snapshot = null;
   sessionStorage.removeItem('spaceship-token'); const socket = state.socket; state.socket = null; socket?.close();
   $('welcome').hidden = false; $('player-hud').hidden = $('death-overlay').hidden = $('dev-section').hidden = true;
@@ -311,7 +321,7 @@ function textTargetPosition(target, context) {
   const local = target.kind === 'player' || target.kind === 'event' && target.id <= 0 || target.kind === 'actor' && (target.id === 0 || target.id === ownActor) || target.kind === 'party' && target.id <= 1;
   const entity = local ? renderer.entities.get(state.snapshot?.playerId) : [...renderer.entities.values()].find(e => target.kind === 'event' && e.eventId === target.id);
   if (!entity) return null;
-  return {x:(entity.x+.5-renderer.camera.x)*48*renderer.zoom,y:(entity.y-renderer.camera.y)*48*renderer.zoom};
+  return renderer.entityScreenPoint(entity,{y:-48});
 }
 function showDialogue(message) {
   if (message.close) { closeDialogue(); return; }
@@ -442,6 +452,9 @@ for (const button of document.querySelectorAll('[data-dev]')) button.onclick = (
 $('respawn-button').onclick = () => send(state.snapshot?.instance ? { type: 'instance', action: 'leave' } : { type: 'respawn' });
 function zoom(value) { renderer.zoom = Math.min(2, Math.max(.5, value)); $('zoom-label').textContent = `${Math.round(renderer.zoom * 100)}%`; }
 $('zoom-out').onclick = () => zoom(renderer.zoom - .25); $('zoom-in').onclick = () => zoom(renderer.zoom + .25);
+for(const button of document.querySelectorAll('[data-orbit]'))button.onclick=()=>{
+  const [yaw,pitch]=button.dataset.orbit.split(',').map(Number);renderer.threeD.orbit(yaw,pitch);
+};
 $('sound-button').onclick = () => {
   state.sound = !state.sound; $('sound-button').textContent = `声音：${state.sound ? '开' : '关'}`;
   if (!state.sound) { state.bgm?.pause(); state.bgs?.pause(); }
@@ -468,6 +481,7 @@ function navigatePointer(clientX, clientY, {held = false} = {}) {
     return;
   }
   const point = renderer.screenToMap(clientX, clientY);
+  if (!Number.isFinite(point.x) || !Number.isFinite(point.y)) return;
   if (point.x < 0 || point.y < 0 || point.x >= renderer.map.width || point.y >= renderer.map.height) return;
   if (state.preview) {renderer.viewCenter = {x: point.x - .5, y: point.y - .5}; return;}
   if (!state.ready || me()?.dead) return;
@@ -516,8 +530,9 @@ function drawDestinationMarker() {
   if (nav && !state.panel && !state.preview) {marker.dataset.x = String(nav.x); marker.dataset.y = String(nav.y); marker.hidden = false;}
   else if (performance.now() > (state.markerUntil || 0)) marker.hidden = true;
   if (!marker.hidden) {
-    marker.style.left = `${(Number(marker.dataset.x) + .5 - renderer.camera.x) * 48 * renderer.zoom}px`;
-    marker.style.top = `${(Number(marker.dataset.y) + .5 - renderer.camera.y) * 48 * renderer.zoom}px`;
+    const pos=renderer.screenPoint(Number(marker.dataset.x)+.5,Number(marker.dataset.y)+.5);
+    marker.style.left = `${pos.x}px`;
+    marker.style.top = `${pos.y}px`;
   }
   if (state.dialogueLayout?.meta.target) {
     const {meta,context} = state.dialogueLayout, pos = textTargetPosition(meta.target,context);
@@ -551,7 +566,8 @@ window.addEventListener('blur', () => {state.keys.clear(); cancelNavigation();})
 document.addEventListener('visibilitychange', () => {state.keys.clear(); if(document.hidden)cancelNavigation();});
 function moveFromKeyboard() {
   if (state.panel || state.pendingDialogue || !$('welcome').hidden) return;
-  const key = [...state.keys].at(-1), direction = directions[key]; if (!direction) return;
+  const key = [...state.keys].at(-1), inputDirection = directions[key]; if (!inputDirection) return;
+  const direction=renderer.threeD.inputDirection(inputDirection);
   if (state.preview) {
     renderer.pan(direction === 6 ? .6 : direction === 4 ? -.6 : 0, direction === 2 ? .6 : direction === 8 ? -.6 : 0);
     $('coordinates').textContent = `预览 X ${Math.round(renderer.viewCenter?.x || 0)} · Y ${Math.round(renderer.viewCenter?.y || 0)}`;

@@ -47,5 +47,8 @@ null,
 {"id":45,"expanded":true,"name":"榆风公寓 · 门厅","order":45,"parentId":40,"scrollX":0,"scrollY":0},
 {"id":46,"expanded":true,"name":"榆风公寓 · 住宅层","order":46,"parentId":40,"scrollX":0,"scrollY":0},
 {"id":47,"expanded":true,"name":"政务服务厅","order":47,"parentId":40,"scrollX":0,"scrollY":0},
-{"id":48,"expanded":true,"name":"榆风公园","order":48,"parentId":40,"scrollX":0,"scrollY":0}
+{"id":48,"expanded":true,"name":"榆风公园","order":48,"parentId":40,"scrollX":0,"scrollY":0},
+{"id":49,"expanded":false,"name":"3D 示例 · 风阶观景台","order":49,"parentId":6,"scrollX":0,"scrollY":0},
+{"id":50,"expanded":false,"name":"3D 示例 · 灯光阅览室","order":50,"parentId":6,"scrollX":0,"scrollY":0},
+{"id":51,"expanded":false,"name":"3D 示例 · 水镜材质园","order":51,"parentId":6,"scrollX":0,"scrollY":0}
 ]

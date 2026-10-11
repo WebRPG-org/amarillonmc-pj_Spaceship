@@ -72,7 +72,7 @@ export function snapshotPreview(map, mapId) {
       const page = event.pages?.find(p => !p.conditions || !Object.entries(p.conditions).some(([k, v]) => k.endsWith('Valid') && v));
       const comments = (page?.list || []).filter(c => [108,408].includes(c.code)).map(c => c.parameters?.[0] || '').join('\n');
       const label = [...comments.matchAll(/<Name:\s*([^\r\n]*?)>/gi)].at(-1)?.[1];
-      return page ? [{ id: `preview-${event.id}`, eventId: event.id, name: event.name, x: event.x, y: event.y,
+      return page ? [{ id: `preview-${event.id}`, eventId: event.id, pageIndex:event.pages.indexOf(page), name: event.name, x: event.x, y: event.y,
         overhead:label ? {text:label,quest:/<Is\s+Quest>/i.test(comments),fontSize:14,range:5,offsetY:36} : null,
         direction: page.image?.direction || 2, image: page.image, priorityType: page.priorityType, opacity: page.opacity ?? 255 }] : [];
     }), self: { inventory: [], skills: [], equips: {} } };

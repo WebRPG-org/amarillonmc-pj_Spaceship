@@ -12,7 +12,7 @@ import {GameHost} from './instances.mjs';
 import {loadAppearanceCatalog,normalizeAppearance} from './appearance.mjs';
 
 const engineRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
-const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.ogg':'audio/ogg','.m4a':'audio/mp4','.mp3':'audio/mpeg','.wav':'audio/wav','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.ico':'image/x-icon','.wasm':'application/wasm','.efkefc':'application/octet-stream','.efkmodel':'application/octet-stream','.efkmat':'application/octet-stream'};
+const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.ogg':'audio/ogg','.m4a':'audio/mp4','.mp3':'audio/mpeg','.wav':'audio/wav','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.ico':'image/x-icon','.wasm':'application/wasm','.efkefc':'application/octet-stream','.efkmodel':'application/octet-stream','.efkmat':'application/octet-stream','.gltf':'model/gltf+json','.glb':'model/gltf-binary','.obj':'text/plain; charset=utf-8','.mtl':'text/plain; charset=utf-8','.babylon':'application/json; charset=utf-8'};
 const json=(res,status,body)=>{res.writeHead(status,{'Content-Type':'application/json; charset=utf-8','Cache-Control':'no-store'});res.end(JSON.stringify(body));};
 async function body(req){let size=0,chunks=[];for await(const chunk of req){size+=chunk.length;if(size>16384)throw new Error('请求过大');chunks.push(chunk);}return JSON.parse(Buffer.concat(chunks).toString('utf8'));}
 function within(base,relative){const resolved=path.resolve(base,relative);return resolved.startsWith(base+path.sep)||resolved===base?resolved:null;}
@@ -25,7 +25,7 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
   const host=new GameHost({content,store,devTools,appearanceCatalog:appearance});
   if(databaseReady)await host.init?.();
   const world=host.world,profileQueues=new Map(),connections=new Map();
-  const publicContent={version:content.version,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId})),database:content.database,textConfig:content.textConfig,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
+  const publicContent={version:content.version,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId,threeD:content.maps.get(m.id).threeD})),database:content.database,threeD:content.threeD,textConfig:content.textConfig,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');
     try{
@@ -53,7 +53,7 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
       }
       if(!['GET','HEAD'].includes(req.method)){json(res,405,{error:'Method not allowed'});return;}
       let base,relative;
-      if(url.pathname.startsWith('/assets/')){const match=/^(img|audio|fonts|effects)\/(.+)$/.exec(decodeURIComponent(url.pathname.slice(8)));if(!match){json(res,404,{error:'Not found'});return;}base=path.join(projectRoot,match[1]);relative=match[2];}
+      if(url.pathname.startsWith('/assets/')){const match=/^(img|audio|fonts|effects|models)\/(.+)$/.exec(decodeURIComponent(url.pathname.slice(8)));if(!match){json(res,404,{error:'Not found'});return;}base=path.join(projectRoot,match[1]);relative=match[2];}
       else if(url.pathname.startsWith('/client/')){base=path.join(engineRoot,'client');relative=decodeURIComponent(url.pathname.slice(8));}
       else if(url.pathname==='/'){base=path.join(engineRoot,'client');relative='index.html';}
       else {json(res,404,{error:'Not found'});return;}

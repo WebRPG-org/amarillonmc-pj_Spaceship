@@ -2,6 +2,7 @@ import { TILE, A3, A4, tileParts, tableEdgeParts, mapTile, isHigher, isTable, ch
 import { zoneView, sceneKey } from './protocol.mjs';
 import { AppearanceComposer } from './appearance.mjs';
 import { EffekseerLayer } from './effekseer.mjs';
+import { ThreeDLayer } from './three-d.mjs';
 
 const color = { text: '#f3eee0', blue: '#7ecee3', enemy: '#ef8e79', gold: '#e7c878' };
 export const assetUrl = (folder, name, ext = 'png') => `/assets/${folder}/${encodeURIComponent(name)}.${ext}`;
@@ -28,6 +29,10 @@ export class Renderer {
     this.canvas = canvas;
     this.ctx = canvas.getContext('2d', { alpha: false });
     this.images = new ImageStore();
+    this.threeD = new ThreeDLayer({onError:message=>{
+      this.images.missing.add(`3D: ${message}`); canvas.dataset.threeDError=message;
+    },onStatus:status=>{canvas.dataset.renderMode=status==='off'?'2d':`3d-${status}`;}});
+    this.appearanceUrls = new WeakMap();
     this.appearances = new AppearanceComposer();
     this.effekseer = new EffekseerLayer({onSound:se=>canvas.dispatchEvent(new CustomEvent('effectaudio',{detail:se})),onError:message=>{this.images.missing.add(message);canvas.dataset.effekseerError=message;}});
     this.entities = new Map();
@@ -44,16 +49,58 @@ export class Renderer {
     requestAnimationFrame(this.drawLoop);
   }
 
-  setMap(map, tileset, database) {
+  setMap(map, tileset, database, threeDConfig) {
     this.map = map;
+    this.canvas.dataset.mapId=String(map.id);
     this.tileset = tileset || {};
     this.database = database || {};
+    this.threeDConfig = threeDConfig;
+    this.pendingThreeDCommands = [];
+    delete this.canvas.dataset.threeDError;
     this.effekseer.reset();this.effekseer.preload(this.database);
     this.sheets = (tileset?.tilesetNames || []).map(n => this.images.get('img/tilesets', n));
     this.parallax = this.images.get('img/parallaxes', map.parallaxName);
     this.entities.clear();
     this.effects = [];
     this.viewCenter = { x: map.width / 2, y: map.height / 2 };
+    if (map.threeD?.enabled) this.startThreeD(); else this.threeD.dispose();
+  }
+
+  startThreeD(force=false) {
+    const rect=this.canvas.getBoundingClientRect();
+    const map=force?{...this.map,note:`${this.map.note||''}\n<mv3d>enable(true)</mv3d>`}:this.map;
+    this.threeD.load({map,tileset:this.tileset,database:this.database,
+      config:{...this.threeDConfig,pluginName:this.map.threeD?.pluginName || this.threeDConfig?.pluginName || 'mv3d'},
+      getSnapshot:()=>Number(this.snapshot?.mapId)===Number(map.id)?this.snapshot:{},
+      width:Math.round(rect.width)||816,height:Math.round(rect.height)||624});
+  }
+
+  threeDCommand(message) {
+    if (message.mapId != null && Number(message.mapId)!==Number(this.map?.id)) return;
+    if (message.instanceId!==undefined && message.instanceId!==(this.snapshot?.instance?.id||null)) return;
+    if (/^disable\b/i.test(message.command)) {this.threeD.dispose(); this.pendingThreeDCommands=[]; return;}
+    if (!this.threeD.enabled) {
+      if (!/^enable\b/i.test(message.command)) {
+        (this.pendingThreeDCommands||=[]).push(message);
+        if(this.pendingThreeDCommands.length>100)this.pendingThreeDCommands.shift();
+        return;
+      }
+      this.startThreeD(true);
+      for(const pending of this.pendingThreeDCommands||[])this.threeD.command(pending);
+      this.pendingThreeDCommands=[];
+    }
+    this.threeD.command(message);
+  }
+
+  screenPoint(x,y,z) {
+    const p=this.point(x,y,z); return {x:p.x*this.zoom,y:p.y*this.zoom};
+  }
+
+  entityScreenPoint(entity, options={}) {
+    if (!this.threeD.enabled) return {x:((entity.x+.5-this.camera.x)*TILE+(options.x||0))*this.zoom,
+      y:((entity.y+1-this.camera.y)*TILE+(options.y??-54))*this.zoom};
+    const head=this.threeD.projectEntity(entity.id),p=head||this.threeD.project(entity.x,entity.y);
+    return p&&!p.behindCamera?{x:p.x+(options.x||0)*this.zoom,y:p.y+((options.y??-54)+(head?54:0))*this.zoom}:{x:-10000,y:-10000};
   }
 
   accept(snapshot) {
@@ -115,6 +162,10 @@ export class Renderer {
 
   screenToMap(clientX, clientY) {
     const rect = this.canvas.getBoundingClientRect();
+    if (this.threeD.enabled) {
+      const p=this.threeD.pick(clientX-rect.left,clientY-rect.top);
+      return p?{x:p.x+.5,y:p.y+.5}:{x:NaN,y:NaN};
+    }
     return { x: (clientX - rect.left) / this.zoom / TILE + this.camera.x,
       y: (clientY - rect.top) / this.zoom / TILE + this.camera.y };
   }
@@ -147,6 +198,9 @@ export class Renderer {
       e.y += (e.targetY - e.y) * alpha;
     }
     const player = this.entities.get(this.snapshot.playerId), center = player || this.viewCenter;
+    if (this.threeD.enabled) {
+      this.drawThreeD(time,dt,rect,ratio,center,player); ctx.restore(); return;
+    }
     const desiredX = (center?.x || 0) + .5 - w / TILE / 2, desiredY = (center?.y || 0) + .5 - h / TILE / 2;
     this.camera.x = this.map.width * TILE < w ? (this.map.width - w / TILE) / 2 : Math.max(0, Math.min(this.map.width - w / TILE, desiredX));
     this.camera.y = this.map.height * TILE < h ? (this.map.height - h / TILE) / 2 : Math.max(0, Math.min(this.map.height - h / TILE, desiredY));
@@ -184,7 +238,46 @@ export class Renderer {
     ctx.restore();
   }
 
-  point(x, y) { return { x: Math.round((x - this.camera.x) * TILE), y: Math.round((y - this.camera.y) * TILE) }; }
+  point(x, y, z) {
+    if(this.threeD?.enabled){const p=this.threeD.project(x-.5,y-.5,z);return p&&!p.behindCamera?{x:p.x/this.zoom,y:p.y/this.zoom}:{x:-10000,y:-10000};}
+    return { x: Math.round((x - this.camera.x) * TILE), y: Math.round((y - this.camera.y) * TILE) };
+  }
+
+  drawThreeD(time,dt,rect,ratio,center,player) {
+    const ctx=this.ctx,w=rect.width/this.zoom,h=rect.height/this.zoom;
+    const appearance=entity=>{
+      const bitmap=entity.appearance && this.appearances.get(entity.appearance,'walk');
+      if(!bitmap?.ready)return null;
+      if(!this.appearanceUrls.has(bitmap))this.appearanceUrls.set(bitmap,bitmap.toDataURL());
+      return this.appearanceUrls.get(bitmap);
+    };
+    const ready=this.threeD.draw({ctx,width:rect.width,height:rect.height,
+      entities:[...this.entities.values()],snapshot:this.snapshot,center,zoom:this.zoom,time,appearance});
+    if(!ready){
+      this.label(this.threeD.error?`3D 加载失败：${this.threeD.error}`:'正在构建 3D 地图…',w/2,h/2,color.text,14);
+      return;
+    }
+    for(const drop of this.snapshot.drops||[])this.drop(drop,time);
+    for(const e of this.entities.values()){
+      if(e.erased||e.disabled||e.transparent||e.visible===false||(!e.maxHp && !e.service))continue;
+      const head=this.entityScreenPoint(e),p={x:head.x/this.zoom,y:head.y/this.zoom};
+      if(p.x<0||p.x>w||p.y<0||p.y>h)continue;
+      if(!e.overhead?.text)this.label(e.name||'',p.x,p.y,e.enemyId?color.enemy:color.text,11);
+      if(e.maxHp){ctx.fillStyle='#101918dd';ctx.fillRect(p.x-19,p.y+7,38,4);ctx.fillStyle=e.enemyId?color.enemy:'#98bd99';ctx.fillRect(p.x-19,p.y+7,38*Math.max(0,Math.min(1,e.hp/e.maxHp)),4);}
+    }
+    for(const e of this.snapshot.projectiles||[]){const p=this.point(e.x+.5,e.y+.5);ctx.fillStyle=color.gold;ctx.beginPath();ctx.arc(p.x,p.y,5,0,Math.PI*2);ctx.fill();}
+    this.effects=this.effects.filter(e=>time-e.start<e.duration);
+    for(const effect of this.effects)this.drawEffect(effect,time);
+    this.effekseer.draw({ctx,width:this.canvas.width,height:this.canvas.height,pixelScale:ratio*this.zoom,point:(x,y)=>this.point(x,y),entity:id=>this.entities.get(id),dt});
+    if(this.showGrid||this.showRegions)for(let y=0;y<this.map.height;y++)for(let x=0;x<this.map.width;x++){
+      const p=this.point(x+.5,y+.5),region=mapTile(this.map,x,y,5);
+      if(p.x<0||p.x>w||p.y<0||p.y>h)continue;
+      if(this.showGrid)this.label(`${x},${y}`,p.x,p.y,'#ffffff88',8);
+      if(this.showRegions&&region)this.label(String(region),p.x,p.y,'#fff',12);
+    }
+    this.drawPresentation(time,dt,w,h);
+    if(this.portraitCanvas&&player?.appearance)this.appearances.preview(this.portraitCanvas,player.appearance,'face',time);
+  }
 
   parts(parts, x, y) {
     for (const p of parts) {

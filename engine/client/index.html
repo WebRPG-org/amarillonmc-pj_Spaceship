@@ -19,6 +19,9 @@
       <section class="world-view" aria-label="游戏地图">
         <canvas id="world" tabindex="0" aria-label="地图视图。单击地面移动，单击角色或物品靠近互动，右键打开或关闭背包。方向键或 WASD 移动，J 攻击，E 交互，Tab 背包。"></canvas>
         <div id="destination-marker" class="destination-marker" hidden aria-hidden="true"></div>
+        <div id="three-d-controls" class="three-d-controls" hidden aria-label="3D 相机">
+          <span>3D 相机</span><button data-orbit="45,0" title="向左环视">↶</button><button data-orbit="-45,0" title="向右环视">↷</button><button data-orbit="0,15" title="俯视">↓</button><button data-orbit="0,-15" title="抬高视线">↑</button>
+        </div>
         <div id="map-loading" class="map-loading" hidden>正在载入地图…</div>
         <div class="world-top"><span id="mode-badge" class="pill">内容与联网测试</span><span id="zone-badge" class="pill danger" hidden></span></div>
         <div id="player-hud" class="player-hud" hidden>
