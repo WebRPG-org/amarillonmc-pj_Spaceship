@@ -10,6 +10,7 @@ import {loadContent} from './content.mjs';
 import {MySqlStore} from './persistence.mjs';
 import {GameHost} from './instances.mjs';
 import {loadAppearanceCatalog,normalizeAppearance} from './appearance.mjs';
+import {createWorkbenchHandler,editorAllowed} from './workbench.mjs';
 
 const engineRoot=path.resolve(path.dirname(fileURLToPath(import.meta.url)),'..');
 const MIME={'.html':'text/html; charset=utf-8','.css':'text/css; charset=utf-8','.js':'text/javascript; charset=utf-8','.mjs':'text/javascript; charset=utf-8','.json':'application/json; charset=utf-8','.png':'image/png','.jpg':'image/jpeg','.jpeg':'image/jpeg','.webp':'image/webp','.ogg':'audio/ogg','.m4a':'audio/mp4','.mp3':'audio/mpeg','.wav':'audio/wav','.woff':'font/woff','.woff2':'font/woff2','.ttf':'font/ttf','.ico':'image/x-icon','.wasm':'application/wasm','.efkefc':'application/octet-stream','.efkmodel':'application/octet-stream','.efkmat':'application/octet-stream','.gltf':'model/gltf+json','.glb':'model/gltf-binary','.obj':'text/plain; charset=utf-8','.mtl':'text/plain; charset=utf-8','.babylon':'application/json; charset=utf-8'};
@@ -25,12 +26,15 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
   const host=new GameHost({content,store,devTools,appearanceCatalog:appearance});
   if(databaseReady)await host.init?.();
   const world=host.world,profileQueues=new Map(),connections=new Map();
-  const publicContent={version:content.version,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId,threeD:content.maps.get(m.id).threeD})),database:content.database,threeD:content.threeD,textConfig:content.textConfig,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
+  const publicContent={version:content.version,gameplay:content.gameplay,scenarios:host.scenarios,maps:content.mapInfos.filter(Boolean).filter(m=>content.maps.has(m.id)).map(m=>({id:m.id,name:m.name,width:content.maps.get(m.id).width,height:content.maps.get(m.id).height,tilesetId:content.maps.get(m.id).tilesetId,threeD:content.maps.get(m.id).threeD})),database:content.database,threeD:content.threeD,textConfig:content.textConfig,recipes:content.recipes,weaponProfiles:Object.fromEntries(content.weaponProfiles||[]),coverage:content.coverage,devTools};
+  const workbench=createWorkbenchHandler({projectRoot,content,host,connections,devTools});
   const server=http.createServer(async(req,res)=>{
     res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');
     try{
       const url=new URL(req.url,'http://localhost');
       if(req.headers.origin&&new URL(req.headers.origin).host!==req.headers.host){json(res,403,{error:'不允许跨站请求'});return;}
+      if(await workbench(req,res,url))return;
+      if((url.pathname==='/editor'||url.pathname.startsWith('/client/editor'))&&!editorAllowed(req,devTools)){json(res,403,{error:'内容工作台仅允许 DEV_TOOLS=1 的本机直连请求'});return;}
       if(url.pathname==='/api/health'){json(res,200,{ok:true,database:databaseReady?'ready':'unavailable',databaseError:dbError,maps:content.maps.size,players:host.players.size,tick:host.tick,devTools});return;}
       if(url.pathname==='/api/appearance'){json(res,200,appearance);return;}
       if(url.pathname==='/api/content'){json(res,200,publicContent);return;}
@@ -56,6 +60,7 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
       if(url.pathname.startsWith('/assets/')){const match=/^(img|audio|fonts|effects|models)\/(.+)$/.exec(decodeURIComponent(url.pathname.slice(8)));if(!match){json(res,404,{error:'Not found'});return;}base=path.join(projectRoot,match[1]);relative=match[2];}
       else if(url.pathname.startsWith('/client/')){base=path.join(engineRoot,'client');relative=decodeURIComponent(url.pathname.slice(8));}
       else if(url.pathname==='/'){base=path.join(engineRoot,'client');relative='index.html';}
+      else if(url.pathname==='/editor'){base=path.join(engineRoot,'client');relative='editor.html';}
       else {json(res,404,{error:'Not found'});return;}
       const file=within(base,relative);if(!file){json(res,403,{error:'Forbidden'});return;}
       const info=await stat(file);if(!info.isFile()){json(res,404,{error:'Not found'});return;}
@@ -74,6 +79,7 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
     sockets.handleUpgrade(req,socket,head,ws=>{ws.accountId=session.id;sockets.emit('connection',ws,req);});
   });
   sockets.on('connection',async ws=>{
+    ws.isAlive=true;ws.on('pong',()=>{ws.isAlive=true;});
     let player,windowStart=Date.now(),count=0;
     ws.on('error',()=>{});
     try{const account=await store.loadPlayer(ws.accountId);if(!account)throw new Error('角色不存在');player=await host.connect(account,msg=>{if(ws.readyState===WebSocket.OPEN)ws.send(JSON.stringify(msg));});if(ws.readyState!==WebSocket.OPEN){await host.disconnect(player.id);return;}connections.set(player.id,ws);}
@@ -86,8 +92,8 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
         const job=(profileQueues.get(player.id)||Promise.resolve()).then(async()=>{
           const patch=message.type==='appearance'?{appearance:normalizeAppearance(message.appearance,appearance)}:{offlineBehavior:message.behavior};
           if(message.type==='offlineBehavior'&&!['stay','evade','search','hunt'].includes(message.behavior))throw new Error('无效的离线行动策略');
-          const profile={...await store.loadProfile(player.id),...patch};
-          await store.saveProfile(player.id,profile);
+          const profile=store.updateProfile?await store.updateProfile(player.id,patch):{...await store.loadProfile(player.id),...patch};
+          if(!store.updateProfile)await store.saveProfile(player.id,profile);
           while(host.transitions.has(player.id))await host.transitions.get(player.id).catch(()=>{});
           await host.updateProfile(player.id,profile);
           host.notice(host.getPlayer(player.id)||player,message.type==='appearance'?'外观已保存为永久角色资料':'离线行动策略已保存，断开连接后生效');
@@ -98,9 +104,10 @@ export async function createApplication({projectRoot=path.resolve(engineRoot,'..
     });
     ws.on('close',()=>{if(connections.get(player.id)!==ws)return;connections.delete(player.id);host.disconnect(player.id).catch(error=>console.error(`保存角色失败: ${error.code||'SAVE_FAILED'}`));});
   });
+  const heartbeat=setInterval(()=>{for(const ws of sockets.clients){if(ws.isAlive===false){ws.terminate();continue;}ws.isAlive=false;ws.ping();}},30000);heartbeat.unref();
   const timer=setInterval(()=>{try{host.update(.05);}catch(error){console.error('World tick failed:',error.message);world.runtimeDiagnostics.set('tick',error.message);}},50);
   timer.unref();
-  async function close(){clearInterval(timer);await Promise.all(profileQueues.values());for(const ws of sockets.clients)ws.terminate();await host.close();await new Promise(resolve=>server.close(resolve));await store.close();}
+  async function close(){clearInterval(timer);clearInterval(heartbeat);await Promise.all(profileQueues.values());for(const ws of sockets.clients)ws.terminate();await host.close();await new Promise(resolve=>server.close(resolve));await store.close();}
   return {server,world,host,appearance,content,close,databaseReady};
 }
 

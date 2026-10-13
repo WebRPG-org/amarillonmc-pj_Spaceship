@@ -1,3 +1,4 @@
+import {configureNpc} from './npcs.mjs';
 /** Authoring contract: map.note contains <modernRound>; event tags are RM comments. */
 export const MODERN_ROUND_MAPS = Object.freeze([31, 32, 33, 34, 35, 36, 37, 38, 39]);
 
@@ -41,11 +42,6 @@ function containerItems(content, type) {
   return items;
 }
 
-const ENEMIES = {
-  scavenger: {hp: 110, atk: 20, def: 8, mat: 10, mdf: 8, agi: 12, luk: 10},
-  guard: {hp: 180, atk: 28, def: 12, mat: 15, mdf: 12, agi: 10, luk: 10}
-};
-
 /** Convert the authored events in place, preserving their editor-visible positions and images. */
 export function decorateModernDistrict(round, map) {
   if (!isModernRoundMap(map.raw)) return;
@@ -58,10 +54,8 @@ export function decorateModernDistrict(round, map) {
       round.containers.set(containerId, {items: containerItems(round.world.content, tags.container), opened: false});
     }
     if (tags.enemy) {
-      const profile = ENEMIES[tags.enemy];
-      if (!profile || !event.enemyId) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 的 engine_enemy 或 enemy_id 无效`);
-      const {hp, ...stats} = profile;
-      Object.assign(event, {name: event.raw.name, noRespawn: true, hp, maxHp: hp, mp: 0, maxMp: 0, stats: {...stats}, customDrops: [{kind: 'item', itemId: tags.enemy === 'guard' ? 14 : 7, quantity: 1}]});
+      if (!configureNpc(event,`engine_npc:${tags.enemy}`,round.world.content)) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 的实时 NPC 模板不存在：${tags.enemy}`);
+      Object.assign(event, {name: event.raw.name, noRespawn: true});
     }
   }
 }

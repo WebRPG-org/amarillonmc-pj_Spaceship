@@ -124,7 +124,7 @@ export class Renderer {
     if(animation?.effectName){
       this.effekseer.play(animation,effect);
       // Impact visuals and floating damage/healing are independent layers.
-      if(effect.value!==undefined)this.effects.push({...effect,animation:null,start:performance.now(),duration:650});
+      if(effect.value!==undefined||effect.kind==='meteor')this.effects.push({...effect,animation:null,start:performance.now(),duration:650});
       return;
     }
     if (animation?.animation1Name) this.images.get('img/animations', animation.animation1Name);
@@ -218,6 +218,8 @@ export class Renderer {
     for (const entity of sorted.filter(e => (e.priorityType ?? 1) < 2)) this.character(entity, time);
     for (let y = startY; y < endY; y++) for (let x = startX; x < endX; x++) this.cell(x, y, frame, true);
     for (const entity of sorted.filter(e => e.priorityType === 2)) this.character(entity, time);
+    // Warnings describe server hit areas and must remain readable under star tiles/roofs.
+    this.drawHazards(time);
     for (const projectile of this.snapshot.projectiles || []) {
       if (projectile.image?.characterName || projectile.image?.tileId) { this.character({ ...projectile, priorityType: 2 }, time); continue; }
       const p = this.point(projectile.x + .5, projectile.y + .5);
@@ -257,13 +259,14 @@ export class Renderer {
       this.label(this.threeD.error?`3D 加载失败：${this.threeD.error}`:'正在构建 3D 地图…',w/2,h/2,color.text,14);
       return;
     }
+    this.drawHazards(time);
     for(const drop of this.snapshot.drops||[])this.drop(drop,time);
     for(const e of this.entities.values()){
       if(e.erased||e.disabled||e.transparent||e.visible===false||(!e.maxHp && !e.service))continue;
       const head=this.entityScreenPoint(e),p={x:head.x/this.zoom,y:head.y/this.zoom};
       if(p.x<0||p.x>w||p.y<0||p.y>h)continue;
-      if(!e.overhead?.text)this.label(e.name||'',p.x,p.y,e.enemyId?color.enemy:color.text,11);
-      if(e.maxHp){ctx.fillStyle='#101918dd';ctx.fillRect(p.x-19,p.y+7,38,4);ctx.fillStyle=e.enemyId?color.enemy:'#98bd99';ctx.fillRect(p.x-19,p.y+7,38*Math.max(0,Math.min(1,e.hp/e.maxHp)),4);}
+      if(!e.structureKey&&!e.overhead?.text)this.label(e.name||'',p.x,p.y,e.enemyId?color.enemy:color.text,11);
+      if(e.maxHp&&(!e.structureKey||e.hp<e.maxHp)){ctx.fillStyle='#101918dd';ctx.fillRect(p.x-19,p.y+7,38,4);ctx.fillStyle=e.enemyId?color.enemy:'#98bd99';ctx.fillRect(p.x-19,p.y+7,38*Math.max(0,Math.min(1,e.hp/e.maxHp)),4);}
     }
     for(const e of this.snapshot.projectiles||[]){const p=this.point(e.x+.5,e.y+.5);ctx.fillStyle=color.gold;ctx.beginPath();ctx.arc(p.x,p.y,5,0,Math.PI*2);ctx.fill();}
     this.effects=this.effects.filter(e=>time-e.start<e.duration);
@@ -320,8 +323,8 @@ export class Renderer {
       } else if (isPlayer || e.enemyId) { ctx.fillStyle = e.enemyId ? color.enemy : color.blue; ctx.fillRect(p.x - 9, p.y - 30, 18, 27); }
     }
     ctx.restore();
-    if (isPlayer || e.enemyId || isService) {
-      if (!e.overhead?.text) this.label((e.name || (e.enemyId ? '敌人' : '玩家')) + (isPlayer && e.connected === false ? ' · 离线' : ''), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
+    if (isPlayer || e.enemyId || e.structureKey&&e.hp<e.maxHp || isService) {
+      if (!e.structureKey&&!e.overhead?.text) this.label((e.name || (e.enemyId ? '敌人' : '玩家')) + (isPlayer && e.connected === false ? ' · 离线' : ''), p.x, p.y - 55, e.id === this.snapshot.playerId ? color.gold : e.enemyId ? color.enemy : color.text, 11);
       if (e.maxHp) { ctx.fillStyle = '#101918dd'; ctx.fillRect(p.x - 19, p.y - 48, 38, 4); ctx.fillStyle = e.enemyId ? color.enemy : '#98bd99'; ctx.fillRect(p.x - 19, p.y - 48, Math.max(0, Math.min(1, e.hp / e.maxHp)) * 38, 4); }
       if (e.id === this.snapshot.playerId) { ctx.strokeStyle = color.gold; ctx.lineWidth = 1; ctx.beginPath(); ctx.ellipse(p.x, p.y - 2, 18, 7, 0, 0, Math.PI * 2); ctx.stroke(); }
     }
@@ -331,7 +334,9 @@ export class Renderer {
     const p = this.point(drop.x + .5, drop.y + .65), ctx = this.ctx, data = this.item(drop.kind, drop.itemId);
     const icon = this.images.get('img/system', 'IconSet'), bob = Math.sin(time / 250 + drop.x) * 2;
     ctx.strokeStyle = '#e9ca7888'; ctx.lineWidth = 2; ctx.beginPath(); ctx.ellipse(p.x, p.y + 11, 14, 5, 0, 0, Math.PI * 2); ctx.stroke();
-    if (drop.kind === 'bag') {
+    if (drop.kind === 'gold') {
+      ctx.fillStyle=color.gold;ctx.beginPath();ctx.arc(p.x,p.y-2+bob,9,0,Math.PI*2);ctx.fill();this.label(`${drop.quantity} G`,p.x,p.y-23+bob,color.gold,10);
+    } else if (drop.kind === 'bag') {
       ctx.fillStyle='#8b7045';ctx.fillRect(p.x-11,p.y-12+bob,22,23);ctx.strokeStyle='#e8cf88';ctx.lineWidth=2;ctx.strokeRect(p.x-7,p.y-16+bob,14,8);ctx.strokeRect(p.x-11,p.y-12+bob,22,23);this.label('遗落背包',p.x,p.y-25+bob,color.gold,10);
     } else if (icon?.ready && data?.iconIndex) ctx.drawImage(icon, data.iconIndex % 16 * 32, Math.floor(data.iconIndex / 16) * 32, 32, 32, p.x - 12, p.y - 17 + bob, 24, 24);
     else { ctx.fillStyle = color.gold; ctx.fillRect(p.x - 7, p.y - 9 + bob, 14, 14); }
@@ -349,10 +354,31 @@ export class Renderer {
     for (const r of rectangles) { const p = this.point(r.x, r.y); this.ctx.fillRect(p.x, p.y, (r.width || 1) * TILE, (r.height || 1) * TILE); this.ctx.strokeRect(p.x, p.y, (r.width || 1) * TILE, (r.height || 1) * TILE); }
   }
 
+  drawHazards(time) {
+    const ctx=this.ctx;
+    for(const hazard of this.snapshot.hazards||[]){
+      const channel=hazard.kind==='meteor-channel',left=Math.max(0,(hazard.impactAt-this.snapshot.serverTime)/1000),pulse=.17+.08*Math.sin(time/70);
+      ctx.save();ctx.fillStyle=channel?`rgba(230,145,32,${pulse})`:`rgba(250,55,25,${pulse+.12})`;ctx.strokeStyle=channel?'#ffbf59':'#ff7252';ctx.lineWidth=2;
+      for(let dx=-1;dx<=1;dx++)for(let dy=-1;dy<=1;dy++){
+        const x=hazard.x+dx,y=hazard.y+dy,corners=[this.point(x,y),this.point(x+1,y),this.point(x+1,y+1),this.point(x,y+1)];
+        ctx.beginPath();ctx.moveTo(corners[0].x,corners[0].y);for(const p of corners.slice(1))ctx.lineTo(p.x,p.y);ctx.closePath();ctx.fill();ctx.stroke();
+      }
+      const center=this.point(hazard.x+.5,hazard.y+.5);
+      this.label(channel?`飞火流星 · ${left.toFixed(1)} 秒`:'陨石落点',center.x,center.y-65,channel?'#ffd380':'#fff0de',13);
+      if(!channel&&left<.45){const travel=left/.45;ctx.strokeStyle='#ffe2a4';ctx.lineWidth=7;ctx.beginPath();ctx.moveTo(center.x+travel*85,center.y-travel*180);ctx.lineTo(center.x+travel*85+24,center.y-travel*180-55);ctx.stroke();}
+      ctx.restore();
+    }
+  }
+
   drawEffect(e, time) {
     // A RAF timestamp can precede performance.now() used by a just-received cue.
     const elapsed = Math.max(0, time - e.start), t = Math.min(1, elapsed / e.duration), p = this.point((e.x || 0) + .5, (e.y || 0) + .5), ctx = this.ctx;
     ctx.save(); ctx.globalAlpha = Math.max(0, 1 - t);
+    if(e.kind==='meteor'){
+      ctx.fillStyle='#ff6e27';ctx.strokeStyle='#ffdf86';ctx.lineWidth=5*(1-t)+1;
+      ctx.beginPath();ctx.arc(p.x,p.y,12+t*80,0,Math.PI*2);ctx.stroke();
+      for(let i=0;i<10;i++){const a=i*Math.PI/5,r=t*85;ctx.fillRect(p.x+Math.cos(a)*r-3,p.y+Math.sin(a)*r-3,6,6);}
+    }
     if (e.animation?.frames?.length) {
       const cells = e.animation.frames[Math.min(e.animation.frames.length - 1, Math.floor(elapsed * 15 / 1000))];
       for (const cell of cells || []) {

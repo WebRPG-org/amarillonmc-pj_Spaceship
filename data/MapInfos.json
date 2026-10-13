@@ -50,5 +50,10 @@ null,
 {"id":48,"expanded":true,"name":"榆风公园","order":48,"parentId":40,"scrollX":0,"scrollY":0},
 {"id":49,"expanded":false,"name":"3D 示例 · 风阶观景台","order":49,"parentId":6,"scrollX":0,"scrollY":0},
 {"id":50,"expanded":false,"name":"3D 示例 · 灯光阅览室","order":50,"parentId":6,"scrollX":0,"scrollY":0},
-{"id":51,"expanded":false,"name":"3D 示例 · 水镜材质园","order":51,"parentId":6,"scrollX":0,"scrollY":0}
+{"id":51,"expanded":false,"name":"3D 示例 · 水镜材质园","order":51,"parentId":6,"scrollX":0,"scrollY":0},
+{"id":52,"expanded":true,"name":"流星废城 · 郊区检查站","order":52,"parentId":2,"scrollX":0,"scrollY":0},
+{"id":53,"expanded":false,"name":"流星废城 · 断街商业区","order":53,"parentId":52,"scrollX":0,"scrollY":0},
+{"id":54,"expanded":false,"name":"流星废城 · 中心广场","order":54,"parentId":52,"scrollX":0,"scrollY":0},
+{"id":55,"expanded":false,"name":"流星废城 · 临时避难所","order":55,"parentId":52,"scrollX":0,"scrollY":0},
+{"id":56,"expanded":false,"name":"流星废城 · 中心数据室","order":56,"parentId":52,"scrollX":0,"scrollY":0}
 ]

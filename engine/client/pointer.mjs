@@ -48,6 +48,7 @@ export class PointerGesture {
 const modeNames = {throw: '投掷', thrown: '投掷', projectile: '远程', firearm: '枪械', gun: '枪械', staff: '法杖', magic: '法杖', melee: '近战', club: '范围近战'};
 export function weaponDetails(entry, profile, inventory = [], itemName = id => `物品 #${id}`) {
   const details = [];
+  if(entry?.itemId===65)details.push('飞火流星 · 以引导结束时自身位置为中心的 3×3 范围','消耗全部 MP · 敌我皆伤，包含自己','只能在室外发动；死亡或进入室内取消，MP 不返还');
   if (profile) {
     details.push(`${modeNames[profile.mode] || profile.mode || '近战'} · 距离 ${profile.range || 1} 格`);
     const costs = [];

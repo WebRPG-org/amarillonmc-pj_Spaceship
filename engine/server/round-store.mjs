@@ -26,6 +26,8 @@ export class RoundStore {
   async close() { /* The host owns the shared pool. */ }
   loadProfile(playerId) { return this.base.loadProfile(playerId); }
   saveProfile(playerId, profile) { return this.base.saveProfile(playerId, profile); }
+  updateProfile(playerId, patch) { return this.base.updateProfile(playerId, patch); }
+  createWorldDrops(options) { return this.base.createScopedWorldDrops(this.roundId,options,connection=>this.assertOpen(connection)); }
 
   async assertOpen(connection) {
     const [rows] = await connection.execute('SELECT status FROM rounds WHERE id = ? FOR SHARE', [this.roundId]);

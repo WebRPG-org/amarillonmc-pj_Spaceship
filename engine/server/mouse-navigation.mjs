@@ -1,5 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {findPath,getPortals} from './navigation.mjs';
+import {METEOR_WEAPON_ID,METEOR_SKILL_ID} from './hazards.mjs';
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
 const face=(a,b)=>Math.abs(b.x-a.x)>Math.abs(b.y-a.y)?(b.x>a.x?6:4):(b.y>a.y?2:8);
 const directions={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
@@ -33,6 +34,8 @@ export class MouseNavigation {
     this.update(player);
   }
   attackReady(player,target,skillId){
+    // This is a self-centered channel; selecting an enemy must not walk into melee first.
+    if(player.equips?.weapon===METEOR_WEAPON_ID&&[1,METEOR_SKILL_ID].includes(skillId))return true;
     const tool=skillId===1?this.world.content.getTool(this.world.content.weaponTools.get(player.equips.weapon)):this.world.content.getToolForSkill(skillId);
     const range=Math.max(1,Math.min(10,(skillId===1?this.world.content.weaponProfiles?.get(player.equips.weapon)?.range:0)||tool?.range||1));
     const deltaX=Math.abs(target.x-player.x),deltaY=Math.abs(target.y-player.y);

@@ -25,7 +25,7 @@ CREATE TABLE IF NOT EXISTS world_drops (
   map_id INT UNSIGNED NOT NULL,
   x INT NOT NULL,
   y INT NOT NULL,
-  kind ENUM('item', 'weapon', 'armor', 'bag') NOT NULL DEFAULT 'item',
+  kind ENUM('item', 'weapon', 'armor', 'bag', 'gold') NOT NULL DEFAULT 'item',
   item_id INT UNSIGNED NOT NULL,
   quantity INT UNSIGNED NOT NULL,
   metadata JSON NOT NULL,
@@ -101,7 +101,7 @@ CREATE TABLE IF NOT EXISTS round_drops (
   map_id INT UNSIGNED NOT NULL,
   x INT NOT NULL,
   y INT NOT NULL,
-  kind ENUM('item', 'weapon', 'armor', 'bag') NOT NULL DEFAULT 'item',
+  kind ENUM('item', 'weapon', 'armor', 'bag', 'gold') NOT NULL DEFAULT 'item',
   item_id INT UNSIGNED NOT NULL,
   quantity INT UNSIGNED NOT NULL,
   metadata JSON NOT NULL,
@@ -110,4 +110,12 @@ CREATE TABLE IF NOT EXISTS round_drops (
   KEY round_drops_map (round_id, map_id),
   CONSTRAINT drop_round FOREIGN KEY (round_id) REFERENCES rounds(id) ON DELETE CASCADE,
   CONSTRAINT round_drops_quantity_positive CHECK (quantity > 0)
+) ENGINE=InnoDB;
+
+CREATE TABLE IF NOT EXISTS world_drop_requests (
+  scope_id VARCHAR(64) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  request_id VARCHAR(128) CHARACTER SET ascii COLLATE ascii_bin NOT NULL,
+  response JSON NULL,
+  created_at TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  PRIMARY KEY (scope_id, request_id)
 ) ENGINE=InnoDB;

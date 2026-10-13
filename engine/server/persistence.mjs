@@ -3,6 +3,7 @@ import { randomBytes, randomUUID, scrypt as scryptCallback, timingSafeEqual } fr
 import { promisify } from 'node:util';
 import { readFile } from 'node:fs/promises';
 import { RoundStore, roundKey, roundRow } from './round-store.mjs';
+import { addInventory } from './combat.mjs';
 
 const scrypt = promisify(scryptCallback);
 const SCRYPT_OPTIONS = { N: 16384, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -59,7 +60,8 @@ function weaponValue(item) {
 
 function dropValue(value) {
   const drop = { ...value, id: value.id ?? randomUUID(), kind: value.kind ?? 'item', metadata: value.metadata ?? {} };
-  if (!/^[0-9a-f-]{36}$/i.test(drop.id) || !['item', 'weapon', 'armor', 'bag'].includes(drop.kind)) throw failure('INVALID_DROP', 'Invalid drop identity or kind.');
+  if (!/^[0-9a-f-]{36}$/i.test(drop.id) || !['item', 'weapon', 'armor', 'bag', 'gold'].includes(drop.kind)) throw failure('INVALID_DROP', 'Invalid drop identity or kind.');
+  if(drop.kind==='gold'){drop.itemId??=0;if(drop.itemId!==0)throw failure('INVALID_DROP','Gold has no item ID.');}
   if (drop.kind === 'bag') {
     drop.itemId ??= 0;
     drop.quantity ??= 1;
@@ -70,7 +72,7 @@ function dropValue(value) {
     }
   }
   if(drop.kind==='weapon')weaponValue({...drop.metadata,kind:drop.kind,quantity:drop.quantity});
-  for (const name of ['mapId', ...(drop.kind === 'bag' ? [] : ['itemId']), 'quantity']) {
+  for (const name of ['mapId', ...(['bag','gold'].includes(drop.kind) ? [] : ['itemId']), 'quantity']) {
     if (!Number.isSafeInteger(drop[name]) || drop[name] <= 0 || drop[name] > 2147483647) throw failure('INVALID_DROP', `Invalid drop ${name}.`);
   }
   if (![drop.x, drop.y].every(v => Number.isSafeInteger(v) && v >= 0 && v <= 2147483647)) throw failure('INVALID_DROP', 'Invalid drop coordinates.');
@@ -99,8 +101,10 @@ export class MySqlStore {
       for (const statement of schema.split(';').map(part => part.trim()).filter(Boolean)) await connection.query(statement);
       // Existing installations keep all account/world data. Only extend the
       // existing enum; the new round/profile tables above are additive.
-      const [columns] = await connection.execute('SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?', [this.database, 'world_drops', 'kind']);
-      if (!columns[0]?.COLUMN_TYPE.includes("'bag'")) await connection.query("ALTER TABLE world_drops MODIFY COLUMN kind ENUM('item', 'weapon', 'armor', 'bag') NOT NULL DEFAULT 'item'");
+      for(const table of ['world_drops','round_drops']){
+        const [columns] = await connection.execute('SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND COLUMN_NAME = ?', [this.database, table, 'kind']);
+        if (!columns[0]?.COLUMN_TYPE.includes("'gold'")) await connection.query(`ALTER TABLE ${table} MODIFY COLUMN kind ENUM('item', 'weapon', 'armor', 'bag', 'gold') NOT NULL DEFAULT 'item'`);
+      }
     } finally {
       await connection.end();
     }
@@ -151,6 +155,53 @@ export class MySqlStore {
     const next = clone(profile);
     await this.pool.execute('INSERT INTO player_profiles (player_id, profile) VALUES (?, ?) ON DUPLICATE KEY UPDATE profile = VALUES(profile), revision = revision + 1', [playerId, JSON.stringify(next)]);
     return next;
+  }
+
+  async updateProfile(playerId, patch) {
+    if(!patch||typeof patch!=='object'||Array.isArray(patch))throw failure('INVALID_PROFILE','Profile patch must be an object.');
+    return this.withConnectionTransaction(async connection=>{
+      const [players]=await connection.execute('SELECT id FROM players WHERE id = ? FOR UPDATE',[playerId]);
+      if(!players[0])throw failure('PLAYER_NOT_FOUND','Player does not exist.');
+      const [rows]=await connection.execute('SELECT profile FROM player_profiles WHERE player_id = ? FOR UPDATE',[playerId]);
+      const profile={...(rows[0]?decode(rows[0].profile):{}),...clone(patch)};
+      await connection.execute('INSERT INTO player_profiles (player_id,profile) VALUES (?,?) ON DUPLICATE KEY UPDATE profile=VALUES(profile),revision=revision+1',[playerId,JSON.stringify(profile)]);
+      return profile;
+    });
+  }
+
+  createWorldDrops(options) { return this.createScopedWorldDrops('world',options); }
+
+  async createScopedWorldDrops(scopeId,{requestId,drops},assertOpen) {
+    requestKey(requestId);
+    if(!Array.isArray(drops)||drops.length>200)throw failure('INVALID_DROP','Expected at most 200 drops.');
+    const values=drops.map(dropValue);
+    return this.withConnectionTransaction(async connection=>{
+      if(assertOpen)await assertOpen(connection);
+      const [insert]=await connection.execute('INSERT IGNORE INTO world_drop_requests (scope_id,request_id) VALUES (?,?)',[scopeId,requestId]);
+      const [rows]=await connection.execute('SELECT response FROM world_drop_requests WHERE scope_id=? AND request_id=? FOR UPDATE',[scopeId,requestId]);
+      if(!insert.affectedRows&&rows[0]?.response){
+        const prior=decode(rows[0].response),remaining=[];
+        // A retry must not put an already claimed drop back into the live map.
+        for(const drop of prior.drops){
+          const [found]=scopeId==='world'?await connection.execute('SELECT * FROM world_drops WHERE id=?',[drop.id]):await connection.execute('SELECT * FROM round_drops WHERE round_id=? AND id=?',[scopeId,drop.id]);
+          if(found[0])remaining.push(dropRow(found[0]));
+        }
+        return{...prior,drops:remaining,duplicate:true};
+      }
+      for(const drop of values){
+        if(scopeId==='world')await connection.execute('INSERT INTO world_drops (id,map_id,x,y,kind,item_id,quantity,metadata) VALUES (?,?,?,?,?,?,?,?)',[drop.id,drop.mapId,drop.x,drop.y,drop.kind,drop.itemId,drop.quantity,JSON.stringify(drop.metadata)]);
+        else await connection.execute('INSERT INTO round_drops (round_id,id,map_id,x,y,kind,item_id,quantity,metadata) VALUES (?,?,?,?,?,?,?,?,?)',[scopeId,drop.id,drop.mapId,drop.x,drop.y,drop.kind,drop.itemId,drop.quantity,JSON.stringify(drop.metadata)]);
+      }
+      const response={drops:values,duplicate:false};
+      await connection.execute('UPDATE world_drop_requests SET response=? WHERE scope_id=? AND request_id=?',[JSON.stringify(response),scopeId,requestId]);
+      return response;
+    });
+  }
+
+  async listPlayerRecords(playerId,limit=30) {
+    const count=Math.max(1,Math.min(50,Math.floor(Number(limit)||30)));
+    const [rows]=await this.pool.execute(`SELECT r.id,r.definition_id,r.metadata,r.result,r.status,r.created_at,r.ended_at,p.result AS personal_result FROM round_participants p JOIN rounds r ON r.id=p.round_id WHERE p.player_id=? AND (r.status NOT IN ('waiting','active') OR p.status<>'active') ORDER BY r.created_at DESC LIMIT ${count}`,[playerId]);
+    return rows.map(r=>({id:r.id,definitionId:r.definition_id,metadata:decode(r.metadata),result:decode(r.result),personalResult:decode(r.personal_result),status:r.status,createdAt:r.created_at,endedAt:r.ended_at}));
   }
 
   forRound(roundId) { return new RoundStore(this, roundKey(roundId)); }
@@ -246,6 +297,27 @@ export class MySqlStore {
       const [rows] = await connection.execute('SELECT * FROM rounds WHERE id = ? FOR UPDATE', [roundId]);
       if (!rows[0]) throw failure('ROUND_NOT_FOUND', 'Round does not exist.');
       if (!['waiting', 'active'].includes(rows[0].status)) return { round: roundRow(rows[0]), result: decode(rows[0].result), duplicate: true };
+      result=clone(result);
+      // Completion and permanent rewards commit together. A replay returns the
+      // recorded result above, including after a lost COMMIT response.
+      if(result.success&&result.reward){
+        result.rewardsByPlayer={};
+        const [members]=await connection.execute("SELECT player_id FROM round_participants WHERE round_id=? AND status='active' ORDER BY player_id",[roundId]);
+        for(const member of members){
+          const playerId=Number(member.player_id),outcome=result.participants?.find(p=>Number(p.id)===playerId)?.outcome;
+          if(!['completed','escaped','victory'].includes(outcome))continue;
+          const [players]=await connection.execute('SELECT state FROM players WHERE id=? FOR UPDATE',[playerId]);
+          const [profiles]=await connection.execute('SELECT profile FROM player_profiles WHERE player_id=? FOR UPDATE',[playerId]);
+          const profile=profiles[0]?decode(profiles[0].profile):{},reward=result.reward,state=stateValue(decode(players[0].state));
+          const granted={titleId:reward.titleId||null,newTitle:false,gold:0,items:[]};
+          if(reward.titleId){profile.titles=Array.isArray(profile.titles)?profile.titles:[];if(!profile.titles.includes(reward.titleId)){profile.titles.push(reward.titleId);granted.newTitle=true;}}
+          if(Number.isSafeInteger(reward.gold)&&reward.gold>0){state.gold=(state.gold||0)+reward.gold;granted.gold=reward.gold;}
+          for(const item of reward.items||[]){addInventory(state,item.kind,item.itemId,item.quantity);granted.items.push(item);}
+          await connection.execute('UPDATE players SET state=?,revision=revision+1 WHERE id=?',[JSON.stringify(state),playerId]);
+          await connection.execute('INSERT INTO player_profiles (player_id,profile) VALUES (?,?) ON DUPLICATE KEY UPDATE profile=VALUES(profile),revision=revision+1',[playerId,JSON.stringify(profile)]);
+          result.rewardsByPlayer[playerId]=granted;
+        }
+      }
       await connection.execute("UPDATE rounds SET status = 'finished', result = ?, ended_at = CURRENT_TIMESTAMP(3) WHERE id = ?", [JSON.stringify(result), roundId]);
       await connection.execute("UPDATE round_participants SET status = 'finished', result = COALESCE(result, ?), left_at = CURRENT_TIMESTAMP(3) WHERE round_id = ? AND status = 'active'", [JSON.stringify({ reason: 'round-finished' }), roundId]);
       const [updated] = await connection.execute('SELECT * FROM rounds WHERE id = ?', [roundId]);

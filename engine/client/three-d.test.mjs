@@ -85,7 +85,7 @@ test('3D overhead UI follows the projected character head and disappears behind 
     projectEntity:()=>projected,project:()=>{throw Error('Floor projection must not position character UI');}},
     entities:new Map([['p',entity]]),snapshot:{},effects:[],canvas:{width:816,height:624},
     entityScreenPoint:Renderer.prototype.entityScreenPoint,label:(...args)=>labels.push(args),
-    effekseer:{draw(){}},drawPresentation(){}};
+    effekseer:{draw(){}},drawHazards:Renderer.prototype.drawHazards,drawPresentation(){}};
   Renderer.prototype.drawThreeD.call(renderer,0,0,{width:816,height:624},1,{},entity);
   assert.deepEqual(labels[0].slice(0,3),['Player',200,75]);
   assert.deepEqual(bars[0],[181,82,38,4]);

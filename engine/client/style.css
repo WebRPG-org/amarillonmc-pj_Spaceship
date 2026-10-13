@@ -7,3 +7,7 @@
 .three-d-controls { position:absolute;right:14px;top:58px;z-index:4;display:flex;gap:4px;align-items:center;padding:5px 8px;border-radius:8px;background:#15231fe8;color:#e7c878;font-size:11px; }
 .three-d-controls[hidden] { display:none; }
 .three-d-controls button { padding:4px 9px;min-width:30px; }
+@media(max-width:720px){
+  #app:has(#panel-overlay:not([hidden])) .toast-stack{position:fixed;top:auto;bottom:12px;left:24px;right:24px;max-width:none;z-index:20;}
+  #app:has(#panel-overlay:not([hidden])) .toast-stack .toast:not(:last-child){display:none;}
+}

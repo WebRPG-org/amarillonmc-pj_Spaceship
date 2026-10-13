@@ -23,6 +23,11 @@ class MemoryScope {
     const state=clone(this.states.get(playerId)),result=await mutator(state),created=drops.map((d,i)=>({...clone(d),id:`${key}:${i}`}));
     this.states.set(playerId,clone(state));for(const d of created)this.drops.set(d.id,clone(d));const outcome={state,result,drops:created,duplicate:false};this.ops.set(key,clone(outcome));return outcome;
   });}
+  createWorldDrops({requestId,drops}){return this.serial(async()=>{
+    const key=`world:${requestId}`;if(this.ops.has(key))return{...clone(this.ops.get(key)),duplicate:true};if(this.closed)throw new Error('ROUND_CLOSED');
+    const created=drops.map((d,i)=>({...clone(d),id:`${key}:${i}`}));for(const d of created)this.drops.set(d.id,clone(d));
+    const result={drops:created,duplicate:false};this.ops.set(key,clone(result));return result;
+  });}
   claimDrop({playerId,requestId,dropId,mutator}){return this.serial(async()=>{
     const key=`${playerId}:${requestId}`;if(this.ops.has(key))return{...clone(this.ops.get(key)),duplicate:true};const drop=this.drops.get(dropId);if(!drop)throw new Error('物品已被拾取');
     const state=clone(this.states.get(playerId)),result=await mutator(state,clone(drop));this.states.set(playerId,clone(state));this.drops.delete(dropId);const outcome={state,result,drop:clone(drop),duplicate:false};this.ops.set(key,clone(outcome));return outcome;
@@ -33,12 +38,24 @@ class MemoryStore extends MemoryScope {
   constructor(){super();this.rounds=new Map();this.profiles=new Map();this.finishes=0;this.aborts=0;}
   async abortUnfinishedRounds(){this.aborts++;return[];}
   async loadProfile(id){return clone(this.profiles.get(id)||{});}
+  async updateProfile(id,patch){const profile={...await this.loadProfile(id),...clone(patch)};this.profiles.set(id,clone(profile));return profile;}
+  async listPlayerRecords(id){return[...this.rounds.values()].filter(r=>r.status==='finished'&&r.members.has(id)).map(r=>clone(r.result));}
   async createRound(data){const r={...data,status:'waiting',scope:new MemoryScope(),members:new Map()};this.rounds.set(data.id,r);return r;}
   forRound(id){return this.rounds.get(id).scope;}
   async updateRound(id,patch){Object.assign(this.rounds.get(id),patch);}
   async joinRound(id,playerId,state){const r=this.rounds.get(id);await r.scope.savePlayer(playerId,state);r.members.set(playerId,'active');return{id:playerId,username:playerId,state:clone(state)};}
   async leaveRound(id,playerId,result){const r=this.rounds.get(id);r.members.set(playerId,'left');return{result};}
-  async finishRound(id,result){const r=this.rounds.get(id);if(r.status==='finished')return{result:r.result,duplicate:true};r.status='finished';r.result=clone(result);r.scope.closed=true;this.finishes++;return{result,duplicate:false};}
+  async finishRound(id,result){
+    const r=this.rounds.get(id);if(r.status==='finished')return{result:clone(r.result),duplicate:true};result=clone(result);
+    // This fake models the persistence contract so host restoration can be tested;
+    // SQL transaction safety and reward idempotency have separate integration tests.
+    if(result.success&&result.reward?.titleId){result.rewardsByPlayer={};for(const p of result.participants||[]){
+      if(p.outcome!=='completed'||r.members.get(p.id)!=='active')continue;
+      const profile=await this.loadProfile(p.id),titles=[...(profile.titles||[])],titleId=result.reward.titleId,newTitle=!titles.includes(titleId);
+      if(newTitle)titles.push(titleId);await this.updateProfile(p.id,{titles});result.rewardsByPlayer[p.id]={titleId,newTitle,gold:0,items:[]};
+    }}
+    r.status='finished';r.result=clone(result);r.scope.closed=true;this.finishes++;return{result,duplicate:false};
+  }
 }
 async function fixture(){
   const content=await loadContent(fileURLToPath(new URL('../../',import.meta.url))),store=new MemoryStore(),messages=new Map();let time=100000;
@@ -49,6 +66,16 @@ async function fixture(){
   return{host,content,store,messages,connect,advance};
 }
 const qty=(p,id)=>p.inventory.filter(i=>i.kind==='item'&&i.itemId===id).reduce((n,i)=>n+i.quantity,0);
+test('concurrent room creation reserves the last capacity slot before persisting',async()=>{
+  const f=await fixture(),a=await f.connect('capacity-a'),b=await f.connect('capacity-b');
+  for(let i=0;i<31;i++)f.host.rounds.set(`occupied-${i}`,{status:'ending'});
+  const entered=deferred(),release=deferred(),create=f.store.createRound.bind(f.store);
+  f.store.createRound=async value=>{entered.resolve();await release.promise;return create(value);};
+  const first=f.host.command(a,{type:'instance',action:'create'});await entered.promise;
+  await assert.rejects(f.host.command(b,{type:'instance',action:'create'}),/测试容量/);
+  release.resolve();await first;assert.equal(f.host.rounds.size,32);assert.equal(f.host.pendingCreations,0);
+  assert.equal(f.store.rounds.size,1);assert.equal(f.host.locations.has(b.id),false);
+});
 async function start(f,id='alice',mode='pve'){let p=await f.connect(id);await f.host.command(p,{type:'instance',action:'create',mode});p=f.host.getPlayer(id);const r=f.host.locations.get(id);await f.host.command(p,{type:'instance',action:'start'});return{p,r};}
 function pathTo(world,player,goal,allowBlockedGoal=false){
   const queue=[{x:player.x,y:player.y,path:[]}],seen=new Set([`${player.x},${player.y}`]),raw=world.content.getMap(player.mapId);
@@ -188,4 +215,158 @@ test('a lost leave response can return the character without saving a closed par
 test('all dead players end the round only after their single-bag death transaction finishes',async()=>{
   const f=await fixture(),{p,r}=await start(f);r.world.damage(p,p.hp);await p._queue;assert.equal([...r.world.maps.get(11).drops.values()].filter(d=>d.kind==='bag').length,1);
   await f.advance(50);await r._queue;assert.equal(r.status,'ended');assert.equal(r.result.reason,'all-dead');assert.equal(r.result.participants[0].outcome,'dead');assert.equal(f.host.getPlayer(p.id).mapId,PUBLIC_CITY_SERVICES.instance.mapId);assert.equal(f.host.rounds.size,0);
+});
+
+const stacks=p=>p.inventory.map(({kind,itemId,quantity})=>({kind,itemId,quantity})).sort((a,b)=>a.kind.localeCompare(b.kind)||a.itemId-b.itemId);
+const inWarning=(p,warning)=>Math.abs(p.x-warning.x)<=1&&Math.abs(p.y-warning.y)<=1;
+async function adventure(f,id='adventurer',{startNow=true}={}){
+  const outside=await f.connect(id);
+  await f.host.command(outside,{type:'interact',targetId:'service:instance-guide'});
+  assert.ok(f.messages.get(id).some(m=>m.type==='service'&&m.scenarios?.some(s=>s.id==='meteor-recovery')));
+  await f.host.command(outside,{type:'instance',action:'create',definitionId:'meteor-recovery',mode:'pvpve'});
+  const p=f.host.getPlayer(id),r=f.host.locations.get(id);
+  assert.equal(f.host.devTools,false);assert.equal(r.world.devTools,false);assert.equal(r.mode,'pve');
+  if(startNow)await f.host.command(p,{type:'instance',action:'start'});
+  return{p,r};
+}
+// Walk at the normal 150 ms input cadence, recomputing against moving NPCs. The
+// walker reacts to actual warning snapshots, leaves their nine cells, and waits
+// rather than re-entering a warning. No teleports, HP/stat changes or NPC erasure.
+async function meteorWalk(f,p,goal,{allowBlockedGoal=false}={}){
+  const r=f.host.locations.get(p.id),world=r.world;let steps=0;
+  while(!goal(p)&&steps++<800){
+    await f.advance(150);
+    assert.equal(p.dead,false,`Adventurer died on Map ${p.mapId} at ${p.x},${p.y}`);
+    assert.equal(f.host.locations.get(p.id),r,'Adventure ended during authored walking route');
+    const warnings=world.hazards.snapshot(p.mapId).filter(h=>h.kind==='meteor');
+    const unsafe=pos=>warnings.some(w=>inWarning(pos,w));
+    const escape=unsafe(p),path=pathTo(world,p,escape?pos=>!unsafe(pos):goal,escape?false:allowBlockedGoal);
+    assert.ok(path?.length,`No ${escape?'warning escape':'objective'} path on Map ${p.mapId} from ${p.x},${p.y}`);
+    const direction=path[0],[dx,dy]=DIRECTIONS[direction];
+    if(!escape&&unsafe({x:p.x+dx,y:p.y+dy}))continue;
+    await f.host.command(p,{type:'move',direction});await p._queue;
+    if(p.hp<250&&qty(p,102))await f.host.command(p,{type:'useItem',itemId:102,requestId:`route-bread-${p.mapId}-${steps}-${world.now}`});
+  }
+  assert.ok(goal(p),`Walking limit exceeded on Map ${p.mapId}`);return steps;
+}
+async function meteorPortal(f,p,toMap){
+  const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.pages.some(pg=>pg.list.some(c=>c.code===201&&c.parameters[1]===toMap)));
+  assert.ok(event,`missing meteor portal ${p.mapId}->${toMap}`);
+  await meteorWalk(f,p,pos=>pos.mapId===toMap||pos.x===event.x&&pos.y===event.y,{allowBlockedGoal:true});await p._queue;assert.equal(p.mapId,toMap);
+}
+async function meteorService(f,p,action){
+  const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.service?.action===action);assert.ok(event);
+  await meteorWalk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);
+  await f.host.command(p,{type:'interact',targetId:event.id});return event;
+}
+async function recoverMeteorDisk(f,p){
+  await meteorPortal(f,p,53);await meteorPortal(f,p,54);await meteorPortal(f,p,56);
+  await meteorService(f,p,'meteorDisk');
+  await meteorPortal(f,p,54);await meteorPortal(f,p,53);await meteorPortal(f,p,52);
+  await meteorService(f,p,'meteorExit');
+}
+
+test('a private adventure resets the player and begins five-second weather only after its owner starts',async()=>{
+  const f=await fixture();f.store.states.set('adventurer',{...f.host.world.defaultState(),level:25,exp:999,gold:1234,inventory:[{kind:'item',itemId:7,quantity:99}],skills:[1,5],states:[{id:4,expires:999999}],switches:{12:true},variables:{8:92},paramPlus:[100,20]});
+  const {p,r}=await adventure(f,'adventurer',{startNow:false}),external=clone(f.store.states.get(p.id));
+  assert.equal(p.level,1);assert.equal(p.exp,0);assert.equal(p.gold,0);assert.equal(p.equips.armor,121);assert.equal(p.equips.weapon,0);
+  assert.deepEqual(stacks(p),[{kind:'armor',itemId:121,quantity:1},{kind:'item',itemId:102,quantity:2},{kind:'item',itemId:103,quantity:2}]);
+  assert.deepEqual(p.skills,[1]);assert.deepEqual(p.states,[]);assert.deepEqual(p.switches,{});assert.deepEqual(p.variables,{});assert.deepEqual(p.paramPlus,[]);
+  const stranger=await f.connect('stranger');await assert.rejects(f.host.command(stranger,{type:'instance',action:'join',instanceId:r.id}),/私人冒险/);
+  await assert.rejects(f.host.command(stranger,{type:'title',titleId:'meteor'}),/尚未获得/);
+  await f.host.command(stranger,{type:'instance',action:'open'});const open=f.messages.get('stranger').filter(m=>m.type==='service').at(-1);assert.ok(!open.instances.some(i=>i.id===r.id));
+  const hp=p.hp;await f.advance(30000);assert.equal(r.world.hazards.strikes.size,0);assert.equal(p.hp,hp);assert.equal(r.snapshot().remainingSeconds,600);
+  await assert.rejects(f.host.command(p,{type:'move',direction:6}),/尚未开始/);
+  await f.host.command(p,{type:'instance',action:'start'});
+  await assert.rejects(f.host.command(p,{type:'travel',mapId:56}),/开发功能/);
+  await f.advance(4950);assert.equal(r.world.hazards.strikes.size,0);await f.advance(50);
+  const first=[...r.world.hazards.strikes.values()][0];assert.ok(first);assert.equal(first.startedAt-r.startedAt,5000);assert.equal(first.impactAt-first.startedAt,1000);assert.deepEqual([first.x,first.y],[p.x,p.y]);assert.equal(first.radius,1);
+  await meteorWalk(f,p,pos=>!inWarning(pos,first));await f.advance(Math.max(0,first.impactAt-r.world.now));assert.equal(p.hp,hp);
+  await f.advance(r.startedAt+9950-r.world.now);assert.equal(r.world.hazards.strikes.size,0);await f.advance(50);
+  assert.equal([...r.world.hazards.strikes.values()][0].startedAt-r.startedAt,10000);
+  await f.host.command(p,{type:'instance',action:'leave'});assert.deepEqual(f.store.states.get(p.id),external);assert.ok(!(await f.store.loadProfile(p.id)).titles?.includes('meteor'));
+});
+
+test('unknown and inherited scenario identifiers are rejected before any durable room is created',async()=>{
+  const f=await fixture(),p=await f.connect('definition-probe'),external=clone(f.store.states.get(p.id));
+  for(const definitionId of ['__proto__','constructor','missing-adventure']){
+    await assert.rejects(f.host.command(p,{type:'instance',action:'create',definitionId,mode:'pve'}),/副本定义不存在/);
+    assert.equal(f.store.rounds.size,0,`${definitionId} must not create a persistent room`);assert.equal(f.store.finishes,0);
+    assert.equal(f.host.rounds.size,0);assert.equal(f.host.locations.size,0);assert.equal(f.host.getPlayer(p.id),p);assert.equal(f.host.transitions.size,0);
+  }
+  assert.deepEqual(f.store.states.get(p.id),external);
+});
+
+test('construction failure after a valid scenario is persisted closes the room and keeps the player in the lobby',async()=>{
+  const f=await fixture(),p=await f.connect('missing-map'),external=clone(f.store.states.get(p.id));
+  assert.ok(f.host.scenarios['meteor-recovery']);const missing=f.content.getMap(56);f.content.maps.delete(56);
+  await assert.rejects(f.host.command(p,{type:'instance',action:'create',definitionId:'meteor-recovery',mode:'pve'}),/副本地图 56 不存在/);
+  assert.equal(f.store.rounds.size,1);const failed=[...f.store.rounds.values()][0];
+  assert.equal(failed.definitionId,'meteor-recovery');assert.equal(failed.status,'finished');assert.equal(failed.result.reason,'creation-failed');assert.equal(failed.scope.closed,true);assert.equal(failed.members.size,0);
+  assert.equal(f.host.rounds.size,0);assert.equal(f.host.locations.size,0);assert.equal(f.host.transitions.size,0);assert.equal(f.host.getPlayer(p.id),p);assert.deepEqual(f.store.states.get(p.id),external);
+  // Repairing the content allows the same player to retry without a stale lock.
+  f.content.maps.set(56,missing);await f.host.command(p,{type:'instance',action:'create',definitionId:'meteor-recovery',mode:'pve'});
+  assert.equal(f.host.locations.get(p.id).status,'waiting');await f.host.command(f.host.getPlayer(p.id),{type:'instance',action:'leave'});
+  assert.ok([...f.store.rounds.values()].every(r=>r.status==='finished'));
+});
+
+test('authored adventure containers grant configured local loot once per distinct map event',async()=>{
+  const f=await fixture(),{p,r}=await adventure(f,'container-walker'),external=clone(f.store.states.get(p.id));
+  async function open(mapId,eventId,x,y){
+    // This isolates service binding and inventory delivery; real travel under
+    // weather is covered by the complete recovery-route test below.
+    await r.world.transfer(p,mapId,x,y);
+    const event=[...r.world.maps.get(mapId).events.values()].find(e=>e.eventId===eventId);assert.ok(event);
+    assert.deepEqual(event.service,{kind:'round',action:'container',containerId:`adventure:${mapId}:${eventId}`});
+    await f.host.command(p,{type:'interact',targetId:event.id});return event;
+  }
+  assert.equal(qty(p,102),2);assert.equal(qty(p,103),2);
+  const first=await open(52,8,6,20);assert.equal(qty(p,102),4);assert.equal(qty(p,103),3);assert.equal(r.containers.get(first.service.containerId).opened,true);
+  const claimed=stacks(p);await f.host.command(p,{type:'interact',targetId:first.id});assert.deepEqual(stacks(p),claimed,'Repeated interaction cannot duplicate an opened box');
+  const second=await open(55,3,18,8);assert.notEqual(second.service.containerId,first.service.containerId);assert.equal(qty(p,102),6);assert.equal(qty(p,103),4);
+  const medical=stacks(p);await f.host.command(p,{type:'interact',targetId:second.id});assert.deepEqual(stacks(p),medical);
+  const supplies=await open(53,12,25,24);assert.equal(qty(p,102),7);assert.equal(qty(p,103),4);assert.equal(p.inventory.filter(i=>i.kind==='weapon'&&i.itemId===63).reduce((n,i)=>n+i.quantity,0),1);
+  const allLoot=stacks(p);await f.host.command(p,{type:'interact',targetId:supplies.id});assert.deepEqual(stacks(p),allLoot);
+  assert.deepEqual([...r.world.store.containers.keys()].sort(),['adventure:52:8','adventure:53:12','adventure:55:3']);assert.deepEqual(stacks(r.world.store.states.get(p.id)),allLoot);
+  assert.deepEqual(f.store.states.get(p.id),external);await f.host.command(p,{type:'instance',action:'leave'});assert.deepEqual(stacks(f.host.getPlayer(p.id)),stacks(external));assert.deepEqual(f.store.states.get(p.id),external);
+});
+
+test('a baseline adventurer dodges real weather, recovers the disk and restores the external state with one permanent title',async()=>{
+  const f=await fixture();f.store.profiles.set('adventurer',{appearance:{kind:'actor',actorId:2,characterName:'Actor1',characterIndex:3},offlineBehavior:'stay',customPreference:'retained'});
+  const {p,r}=await adventure(f),external=clone(f.store.states.get(p.id)),baselineHp=p.maxHp;
+  await assert.rejects(meteorService(f,p,'meteorExit'),/尚未取得/);
+  await recoverMeteorDisk(f,p);
+  assert.equal(p.dead,false);assert.equal(p.maxHp,baselineHp);assert.equal(p.level,1);assert.equal(qty(p,r.scenario.diskItemId),1);
+  assert.equal(r.status,'ended');assert.equal(r.result.reason,'disk-extracted');assert.equal(r.result.participants[0].outcome,'completed');assert.equal(f.store.finishes,1);
+  assert.deepEqual(f.store.states.get(p.id),external);const restored=f.host.getPlayer(p.id);assert.equal(qty(restored,104),0);assert.ok(!restored.inventory.some(i=>i.kind==='weapon'&&i.itemId===65));
+  assert.deepEqual(restored.profile.titles,['meteor']);assert.equal(restored.profile.customPreference,'retained');assert.equal(restored.characterIndex,3);
+  const result=f.messages.get(p.id).find(m=>m.type==='instanceResult'&&m.result.reason==='disk-extracted');assert.deepEqual(result.result.rewards,{titleId:'meteor',newTitle:true,gold:0,items:[]});
+  assert.ok(f.messages.get(p.id).some(m=>m.type==='effect'&&m.kind==='meteor'),'Real timed impacts ran during the walking route');
+  await f.host.finishRound(r,{reason:'replayed',success:true});assert.equal(f.store.finishes,1);assert.deepEqual((await f.store.loadProfile(p.id)).titles,['meteor']);
+  await f.host.command(restored,{type:'records'});assert.equal(f.messages.get(p.id).filter(m=>m.type==='records').at(-1).records[0].definitionId,'meteor-recovery');
+  await f.host.command(restored,{type:'title',titleId:'meteor'});assert.equal(restored.profile.equippedTitle,'meteor');assert.equal(restored.profile.customPreference,'retained');
+  await f.host.command(restored,{type:'instance',action:'create',mode:'pve'});const dts=f.host.getPlayer(p.id);assert.equal(dts.level,1);assert.equal(dts.gold,0);assert.equal(dts.equips.armor,121);
+  assert.equal(dts.inventory.filter(i=>i.kind==='weapon'&&i.itemId===65).reduce((n,i)=>n+i.quantity,0),1);assert.equal(dts.equips.weapon,0,'Title grants a carried weapon, not forced equipment');
+  await assert.rejects(f.host.command(dts,{type:'title',titleId:null}),/主世界/);await f.host.command(dts,{type:'instance',action:'leave'});
+  const outside=f.host.getPlayer(p.id);await f.host.command(outside,{type:'instance',action:'create',definitionId:'meteor-recovery',mode:'pve'});
+  const unsupported=f.host.getPlayer(p.id);assert.equal(unsupported.inventory.some(i=>i.kind==='weapon'&&i.itemId===65),false);assert.equal(unsupported.profile.equippedTitle,'meteor');
+  await f.host.command(unsupported,{type:'instance',action:'leave'});assert.deepEqual(f.store.states.get(p.id),external);
+});
+
+test('death, timeout and departure cannot award the adventure title or leak local inventory',async t=>{
+  for(const outcome of ['death','timeout','leave'])await t.test(outcome,async()=>{
+    const f=await fixture(),{p,r}=await adventure(f,outcome),external=clone(f.store.states.get(p.id));
+    if(outcome==='death'){
+      // Standing in two natural 400-damage impacts kills the real LV1 character.
+      await f.advance(11100);await p._queue;await f.advance(50);await r._queue;
+      assert.equal(r.result.reason,'all-dead');assert.equal(r.result.participants[0].outcome,'dead');
+    }else if(outcome==='timeout'){
+      await meteorPortal(f,p,53);await meteorPortal(f,p,55);const before=p.hp;
+      await f.advance(Math.max(0,r.startedAt+r.durationSeconds*1000-r.world.now)+50);await r._queue;
+      assert.equal(p.dead,false);assert.equal(p.hp,before,'Indoor shelter prevents outdoor meteor damage');assert.equal(r.result.reason,'timeout');
+    }else{
+      await meteorPortal(f,p,53);await f.host.command(p,{type:'instance',action:'leave'});assert.equal(r.result.reason,'all-left');
+    }
+    assert.equal(r.status,'ended');assert.equal(f.host.locations.has(p.id),false);assert.deepEqual(f.store.states.get(p.id),external);assert.ok(!(await f.store.loadProfile(p.id)).titles?.includes('meteor'));
+  });
 });

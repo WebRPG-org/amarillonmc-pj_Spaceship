@@ -9,6 +9,7 @@ import {ChatService} from './chat.mjs';
 export class GameHost {
   constructor({content,store,devTools=false,appearanceCatalog=null,clock=Date.now,random=Math.random}){
     Object.assign(this,{content,store,devTools,appearanceCatalog,clock,random});this.scenario=ensureGameContent(content);this.rounds=new Map();this.locations=new Map();this.connecting=new Set();this.transitions=new Map();this._diagnostics=new Map();
+    this.scenarios={...structuredClone(content.gameplay?.scenarios||{}),[this.scenario.id]:this.scenario};
     this.world=this.lobbyWorld=new World({content,store,devTools,clock,random,retainDisconnected:true,hooks:{onMapReady:map=>this.decorateLobby(map),onService:(player,event)=>this.serviceOpen(player,event.service.kind)}});
     this.ready=Promise.resolve();this.initialized=false;this.chat=new ChatService({clock});
   }
@@ -23,7 +24,7 @@ export class GameHost {
   async decorateLobby(map){bindPublicCityServices(map);}
   serviceOpen(player,service='instance'){
     const world=this.playerWorld(player.id);if(service==='appearance'){world.send(player.id,{type:'service',service:'appearance',action:'open'});return;}
-    world.send(player.id,{type:'service',service:'instance',action:'open',scenario:this.scenario,instances:[...this.rounds.values()].filter(r=>r.status==='waiting').map(r=>r.snapshot()),modes:['pve','pvpve'],current:this.locations.get(player.id)?.snapshot()||null});
+    world.send(player.id,{type:'service',service:'instance',action:'open',scenario:this.scenario,scenarios:Object.values(this.scenarios),instances:[...this.rounds.values()].filter(r=>r.status==='waiting'&&r.scenario.maxPlayers>1).map(r=>r.snapshot()),modes:['pve','pvpve'],current:this.locations.get(player.id)?.snapshot()||null});
   }
   async connect(account,send){await this.init();if(this.connecting.has(account.id))throw new Error('角色正在连接');this.connecting.add(account.id);
     try{while(this.transitions.has(account.id))await this.transitions.get(account.id).catch(()=>{});const settling=this.locations.get(account.id);if(settling?.status==='ending'){await (settling._finishPromise||this.finishRound(settling,settling.pendingResult));}const existing=this.getPlayer(account.id);if(existing){const p=await this.playerWorld(account.id).reconnect(account.id,send);return p;}
@@ -39,14 +40,23 @@ export class GameHost {
   assertAtEntrance(player){const entrance=PUBLIC_CITY_SERVICES.instance,guide=this.world.maps.get(entrance.mapId)?.events.get(`service:${entrance.id}`);if(player.dead||player._dying||player.mapId!==entrance.mapId||!guide||Math.abs(player.x-guide.x)+Math.abs(player.y-guide.y)>1)throw new Error('请到中央广场的远征接引员旁进入副本');}
   async disconnect(id){if(this.transitions.has(id))await this.transitions.get(id).catch(()=>{});const r=this.locations.get(id);if(r?.status==='ending')await (r._finishPromise||this.finishRound(r,r.pendingResult)).catch(()=>{});return this.playerWorld(id).disconnect(id);}
   exclusive(id,operation){if(this.transitions.has(id))return Promise.reject(new Error('正在切换世界，请稍候'));const work=Promise.resolve().then(operation);this.transitions.set(id,work);return work.finally(()=>{if(this.transitions.get(id)===work)this.transitions.delete(id);});}
-  async create(player,mode){if(!['pve','pvpve'].includes(mode))throw new Error('请选择PvE或PvPvE');if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);
-    const id=randomUUID();await this.store.createRound({id,definitionId:this.scenario.id,metadata:{mode,ownerId:player.id}});
-    const round=new Round({id,mode,ownerId:player.id,content:this.content,store:this.store,host:this,clock:this.clock,random:this.random});this.rounds.set(id,round);
-    try{await this.join(player,id);return round;}catch(error){await this.store.finishRound(id,{reason:'creation-failed'});this.rounds.delete(id);throw error;}
+  async create(player,mode,definitionId=this.scenario.id){if(!['pve','pvpve'].includes(mode))throw new Error('请选择PvE或PvPvE');if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);
+    if(typeof definitionId!=='string'||!Object.hasOwn(this.scenarios,definitionId))throw new Error('副本定义不存在');
+    const scenario=this.scenarios[definitionId];if(scenario.type==='adventure')mode='pve';
+    if(this.rounds.size+(this.pendingCreations||0)>=32)throw new Error('当前副本已达到测试容量，请稍后再试');
+    this.pendingCreations=(this.pendingCreations||0)+1;let reserved=true;
+    try{
+      const id=randomUUID();await this.store.createRound({id,definitionId:scenario.id,metadata:{name:scenario.name,type:scenario.type,mode,ownerId:player.id}});
+      try{
+        const round=new Round({id,mode,ownerId:player.id,content:this.content,store:this.store,host:this,clock:this.clock,random:this.random,scenario});this.rounds.set(id,round);
+        this.pendingCreations--;reserved=false;
+        await this.join(player,id);return round;
+      }catch(error){await this.store.finishRound(id,{reason:'creation-failed'});this.rounds.delete(id);throw error;}
+    }finally{if(reserved)this.pendingCreations--;}
   }
-  async join(player,instanceId){if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);const round=this.rounds.get(instanceId);if(!round||round.status!=='waiting')throw new Error('该等待副本不存在');if(round.members.size>=this.scenario.maxPlayers)throw new Error('副本已满');
+  async join(player,instanceId){if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);const round=this.rounds.get(instanceId);if(!round||round.status!=='waiting')throw new Error('该等待副本不存在');if(round.scenario.maxPlayers===1&&round.ownerId!==player.id)throw new Error('这是另一位玩家的私人冒险');if(round.members.size>=round.scenario.maxPlayers)throw new Error('副本已满');
     return round.serialize(async()=>{
-      if(round.status!=='waiting'||round.members.size>=this.scenario.maxPlayers)throw new Error('副本已开始或已满');
+      if(round.status!=='waiting'||round.members.size>=round.scenario.maxPlayers)throw new Error('副本已开始或已满');
       const state=round.seed(player),account=await this.store.joinRound(round.id,player.id,state);
       const send=player._send,profile=player.profile||{};let joined;
       try{await this.world.detach(player.id);joined=await round.world.connect({...account,id:player.id,username:player.name,state:account.state||state},send,{announce:false});this.locations.set(player.id,round);this.applyProfile(joined,await this.latestProfile(player.id,profile));round.members.set(player.id,{id:player.id,name:player.name,result:null});round.announce(`${player.name} 已加入；创建者可在副本面板开始。`);round.world.sendSnapshot(joined);this.serviceOpen(joined);return joined;}
@@ -60,7 +70,7 @@ export class GameHost {
     if(!player._departure.recorded){if(!player._departure.flushed){await round.world.flush(player);player._departure.flushed=true;}await this.store.leaveRound(round.id,player.id,{outcome});player._departure.recorded=true;}
     const member=round.members.get(player.id);if(member)member.result=outcome;
     const restored=await this.restoreLobby(round,player);
-    this.world.send(player.id,{type:'instanceResult',result:{instanceId:round.id,outcome,reason:outcome}});this.world.sendSnapshot(restored);
+    this.world.send(player.id,{type:'instanceResult',result:{instanceId:round.id,name:round.scenario.name,outcome,reason:outcome,durationSeconds:round.startedAt?Math.floor((this.clock()-round.startedAt)/1000):0}});this.world.sendSnapshot(restored);
     if(round.status==='waiting'){round.members.delete(player.id);if(round.ownerId===player.id)round.ownerId=round.members.keys().next().value||null;}
     if(round.world.players.size===0&&['waiting','active'].includes(round.status))await this.finishRoundNow(round,{reason:'all-left',success:false});
     return restored;
@@ -77,11 +87,11 @@ export class GameHost {
     round.status='ending';round.world.paused=true;round.pendingResult=result;
     round._finishPromise=(async()=>{const players=[...round.world.players.values()];
       if(!round.result){if(!round._settlementFlushed){for(const p of players)if(!p._departure?.flushed)await round.world.flush(p);round._settlementFlushed=true;}
-        const full={...result,instanceId:round.id,mode:round.mode,finishedAt:this.clock(),participants:[...round.members.values()].map(m=>({...m,outcome:m.result||((result.success&&!round.world.players.get(m.id)?.dead)?'completed':round.world.players.get(m.id)?.dead?'dead':'failed')}))};
+        const full={...result,instanceId:round.id,definitionId:round.scenario.id,name:round.scenario.name,type:round.scenario.type,mode:round.mode,finishedAt:this.clock(),durationSeconds:round.startedAt?Math.floor((this.clock()-round.startedAt)/1000):0,reward:result.success?round.scenario.reward:null,participants:[...round.members.values()].map(m=>({...m,outcome:m.result||((result.success&&!round.world.players.get(m.id)?.dead)?'completed':round.world.players.get(m.id)?.dead?'dead':'failed')}))};
         const committed=await this.store.finishRound(round.id,full);round.result=committed.result||full;
       }
       const full=round.result;
-      for(const p of players){while(this.transitions.has(p.id))await this.transitions.get(p.id).catch(()=>{});await this.exclusive(p.id,async()=>{const restored=await this.restoreLobby(round,p);this.world.send(p.id,{type:'instanceResult',result:{...full,outcome:full.participants.find(m=>m.id===p.id)?.outcome}});this.world.sendSnapshot(restored);});}
+      for(const p of players){while(this.transitions.has(p.id))await this.transitions.get(p.id).catch(()=>{});await this.exclusive(p.id,async()=>{const restored=await this.restoreLobby(round,p);this.world.send(p.id,{type:'instanceResult',result:{...full,rewards:full.rewardsByPlayer?.[p.id],outcome:full.participants.find(m=>m.id===p.id)?.outcome}});this.world.sendSnapshot(restored);});}
       round.status='ended';round.phase='completed';round.world.maps.clear();round.world.events.tasks.clear();round.world.events.dialogues.clear();this.rounds.delete(round.id);return full;
     })().catch(error=>{round._finishPromise=null;round.retryFinishAt=this.clock()+1000;round.world.runtimeDiagnostics.set('settlement',error.message);throw error;});return round._finishPromise;
   }
@@ -90,13 +100,24 @@ export class GameHost {
     if(!(message.type==='instance'&&['list','open'].includes(message.action))&&(round||message.contextInstanceId!==undefined)&&message.contextInstanceId!==(round?.id||null))throw new Error('操作来自旧世界或上一局，已忽略');
     if(message.type==='instance'){
       if(message.action==='list'||message.action==='open')return this.serviceOpen(player);
-      if(message.action==='create')return this.exclusive(player.id,()=>this.create(player,message.mode||'pve'));
+      if(message.action==='create')return this.exclusive(player.id,()=>this.create(player,message.mode||'pve',message.definitionId||this.scenario.id));
       if(message.action==='join')return this.exclusive(player.id,()=>this.join(player,message.instanceId));
       if(message.action==='start'){if(!round)throw new Error('尚未加入副本');return round.start(player);}
       if(message.action==='leave'){if(!round)throw new Error('尚未加入副本');return round.serialize(()=>this.returnPlayer(round,player,player.dead?'dead':'left'));}
       throw new Error('未知副本操作');
     }
     if(message.type==='chat')return this.chat.send(this.playerWorld(player.id),player,message,{instanceId:round?.id||null});
+    if(message.type==='records'){const records=await this.store.listPlayerRecords?.(player.id)||[];this.playerWorld(player.id).send(player.id,{type:'records',records});return;}
+    if(message.type==='title'){
+      if(round)throw new Error('请回到主世界调整头衔；入局效果在出发时确定');
+      return this.exclusive(player.id,async()=>{
+        const profile=await this.store.loadProfile(player.id),titleId=message.titleId||null;
+        if(titleId&&(!this.content.gameplay?.titles?.[titleId]||!profile.titles?.includes(titleId)))throw new Error('尚未获得这个头衔');
+        const patch={equippedTitle:titleId};
+        const updated=this.store.updateProfile?await this.store.updateProfile(player.id,patch):await this.store.saveProfile(player.id,{...profile,...patch});
+        this.applyProfile(player,updated);this.world.sendSnapshot(player);this.notice(player,titleId?'头衔已装备，将在允许该效果的下一次副本入场时生效':'头衔已卸下');
+      });
+    }
     if(message.type==='navigate'&&message.cancel)return this.playerWorld(player.id).navigation.cancel(player);
     if(round){if(round.status!=='active')throw new Error('副本尚未开始或正在结算');if(['respawn','travel','dev'].includes(message.type))throw new Error('正式副本不能重生或使用开发功能');}
     return this.playerWorld(player.id).command(player,message);

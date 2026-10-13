@@ -1,5 +1,16 @@
 # Browser client verification
 
+## Beta foundation and meteor adventure verified on 2026-10-13
+
+- Full unit suite: 240 passed, zero failures; five MySQL parent groups are intentionally excluded from the default run. The separate real-MySQL run passed all 29 reported tests with no skips.
+- Host tests complete the entire ruined-city route at the actual LV1 stats and normal movement speed, dodging live weather. They also cover return-state isolation, unique title rewards, allowed title loadouts, all failure outcomes, independent supply boxes and concurrent room-capacity reservations.
+- `tools/verify-beta-ui.mjs` uses a temporary database and ephemeral server with development features disabled. Browser clicks cover login, title equipment, buying two items and selling one, private-adventure start, actual nine-tile warnings, the DTS gifted weapon, MP expenditure, indoor cancellation and records. Fixture ownership and location changes isolate UI checks; they are not a substitute for the full host route test.
+- Desktop and mobile captures are saved under `engine/.artifacts/beta-ui/`. Warning graphics are drawn above star-layer roofs. Mobile panels retain their title and close control while a notification is visible.
+- Workbench browser checks played both MV image-sheet and MZ Effekseer effects. Isolated file tests verify conflict handling, exact source backups, native field preservation and path/junction boundaries.
+- The earlier Map040 events 11/12/13 and Map044 event 9 reachability failures below were fixed in this batch; all public-city checks now pass. Historical verification notes remain as dated records.
+
+Feature rules, current boundaries and run instructions: [beta implementation record](../../doc/2026-10-13-beta-foundation.md).
+
 ## Text and chat compatibility verified on 2026-10-11
 
 - Used a separate HTTP/WebSocket application on loopback with an in-memory store and temporary event fixture; no existing MySQL accounts or maps were changed.

@@ -185,7 +185,7 @@ test('actual round spawn and every modern arrival can reach loot, enemies and ex
       }
       for (const authored of authoredEnemies(map)) {
         const enemy = runtimeEvent(round, id, authored.id);
-        assert.ok(enemy?.enemyId > 0 && enemy.hp > 0, `Enemy ${id}:${authored.id} lost during round import`);
+        assert.ok(enemy?.npcKey && enemy.enemyId === -1 && enemy.hp > 0, `Native NPC ${id}:${authored.id} lost during round import`);
         assert.deepEqual({x: enemy.x, y: enemy.y}, {x: authored.x, y: authored.y});
         assert.deepEqual(content.findSpawn(id, enemy.x, enemy.y), {x: enemy.x, y: enemy.y}, `Enemy ${enemy.id} stands on blocked tiles`);
       }
