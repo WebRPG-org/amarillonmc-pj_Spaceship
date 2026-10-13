@@ -76,7 +76,7 @@ function withDefeatedEnemies(round, operation) {
 function portalsFor(world, player, mapId) {
   return [...world.maps.get(mapId).events.values()].flatMap(event => {
     const page = world.events.pageFor({...player, mapId}, event, mapId);
-    return (page?.list || []).filter(c => c.code === 201 && c.parameters[0] === 0).map(command => ({event, page, command}));
+    return (page?.engineDisabledReason ? [] : page?.list || []).filter(c => c.code === 201 && c.parameters[0] === 0).map(command => ({event, page, command}));
   });
 }
 function exploreMap(world, player, start) {

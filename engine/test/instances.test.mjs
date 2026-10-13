@@ -89,7 +89,7 @@ function pathTo(world,player,goal,allowBlockedGoal=false){
 }
 async function walk(f,p,goal,allowBlockedGoal=false){const world=f.host.playerWorld(p.id),path=pathTo(world,p,goal,allowBlockedGoal);assert.ok(path,`No path on map ${p.mapId} from ${p.x},${p.y}`);for(const direction of path){await f.advance();await f.host.command(p,{type:'move',direction});await p._queue;}return path.length;}
 async function service(f,p,action,containerId){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.service?.action===action&&(!containerId||e.service.containerId===containerId));assert.ok(event,`missing ${action} on ${p.mapId}`);await walk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);await f.host.command(p,{type:'interact',targetId:event.id});return event;}
-async function portal(f,p,toMap){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.pages.some(pg=>pg.list.some(c=>c.code===201&&c.parameters[1]===toMap)));assert.ok(event,`missing portal ${p.mapId}->${toMap}`);await walk(f,p,pos=>pos.x===event.x&&pos.y===event.y,true);await p._queue;assert.equal(p.mapId,toMap);}
+async function portal(f,p,toMap){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.pages.some(pg=>pg.list.some(c=>c.code===201&&c.parameters[1]===toMap)));assert.ok(event,`missing portal ${p.mapId}->${toMap}`);await walk(f,p,pos=>pos.x===event.x&&pos.y===event.y,true);await p._queue;for(let elapsed=0;p.mapId!==toMap&&elapsed<5000;elapsed+=100)await f.advance(100);assert.equal(p.mapId,toMap);}
 
 test('new arrivals walk from the public city to its authored expedition guide and appearance NPC',async()=>{
   const f=await fixture(),p=await f.connect('new-arrival',{atEntrance:false});
@@ -130,7 +130,9 @@ test('NPC entry leaves the external world intact and independent rounds do not s
   const ra=f.host.locations.get('a'),rb=f.host.locations.get('b');await f.host.command(a,{type:'instance',action:'start'});await f.host.command(b,{type:'instance',action:'start'});
   assert.notEqual(ra.world.maps.get(11),rb.world.maps.get(11));assert.equal(ra.world.maps.get(11).pvp,false);assert.equal(rb.world.maps.get(11).pvp,true);assert.deepEqual(f.store.states.get('a'),before);
   assert.ok(!ra.world.snapshot(f.host.getPlayer('a')).players.some(p=>p.id==='b'));assert.ok(f.host.world.maps.get(PUBLIC_CITY_SERVICES.instance.mapId).events.size>2);
-  assert.ok(ra.world.content.getMap(11).events.filter(Boolean).every(e=>e.pages.every(p=>!p.list.some(c=>[355,356].includes(c.code)))));
+  const legacy=ra.world.content.getMap(11).events[21].pages[0];
+  assert.ok(legacy.list.some(c=>c.code===355),'native legacy source remains reviewable');assert.match(legacy.engineDisabledReason,/旧战斗|旧 Chrono/);
+  assert.ok(ra.world.runtimeDiagnostics.size>0);
 });
 
 test('a waiting player joins, shared containers grant only once, reusable key opens an exit for another player',async()=>{

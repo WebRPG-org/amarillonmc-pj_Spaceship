@@ -8,6 +8,7 @@ import {ChatService,activeChatBubble,chatSettings,CHAT_LIMITS} from './chat.mjs'
 import {threeDSnapshot,eventThreeDSource} from './three-d.mjs';
 import {HazardRuntime,METEOR_WEAPON_ID,METEOR_SKILL_ID} from './hazards.mjs';
 import {eventNotes,configureNpc,configureStructure,resetNpc,npcRewards} from './npcs.mjs';
+import {eventTags,npcTag} from './event-tags.mjs';
 import {openShop,tradeAtShop,shopAllowed,bindShopTag} from './shops.mjs';
 
 export const DIRECTIONS={2:[0,1],4:[-1,0],6:[1,0],8:[0,-1]};
@@ -38,10 +39,11 @@ export class World {
   addEvent(map,raw,sourceMapId=map.id,position=null) {
     const page=raw.pages.find(p=>!p.conditions?.switch1Valid&&!p.conditions?.switch2Valid&&!p.conditions?.variableValid&&!p.conditions?.selfSwitchValid&&!p.conditions?.actorValid&&!p.conditions?.itemValid)||raw.pages[0];
     const text=eventNotes(raw,page), enemyId=page?.engineDisabledReason?0:Number(text.match(/enemy_id\s*:\s*(\d+)/i)?.[1]||0);
-    const nativeKey=text.match(/engine_(?:npc|enemy)\s*:\s*([\w-]+)/i)?.[1],enemy=this.content.gameplay?.npcs?.[nativeKey]?null:this.content.database.Enemies?.[enemyId];
+    const nativeKey=npcTag(eventTags(raw,page)),enemy=nativeKey?null:this.content.database.Enemies?.[enemyId];
     const event={...structuredClone(raw),id:`map:${map.id}:event:${raw.id}${position?':'+randomUUID():''}`,eventId:raw.id,sourceMapId,mapId:map.id,raw,pages:raw.pages,x:position?.x??raw.x,y:position?.y??raw.y,direction:page?.image?.direction||2,image:page?.image||{},priorityType:page?.priorityType??1,through:page?.through||false,name:text.match(/<Name:\s*([^>]+)>/i)?.[1]||raw.name,enemyId:enemy?enemyId:0,erased:false,homeX:position?.x??raw.x,homeY:position?.y??raw.y,nextMove:0,nextAttack:0,states:[]};
     if(enemy)this.setEnemyStats(event,enemy);
     if(!page?.engineDisabledReason){configureNpc(event,text,this.content);configureStructure(event,text,this.content);bindShopTag(this,event,text);}
+    for(const[index,candidate]of raw.pages.entries())if(candidate.engineDisabledReason)this.runtimeDiagnostics.set(`event:disabled:${map.id}:${raw.id}:${index}`,candidate.engineDisabledReason);
     map.events.set(event.id,event);return event;
   }
   setEnemyStats(entity,enemy) {

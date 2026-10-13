@@ -1,9 +1,10 @@
+import {parseEngineTags,npcTag} from './event-tags.mjs';
+export {eventNotes} from './event-tags.mjs';
 const number=(value,fallback)=>Number.isFinite(Number(value))?Number(value):fallback;
-export const eventNotes=(raw,page)=>[raw.note||'',...(page?.list||[]).filter(c=>[108,408].includes(c.code)).map(c=>c.parameters?.[0]||'')].join('\n');
 
 /** Real-time NPCs are independent of RPG Maker's turn-based enemy database. */
 export function configureNpc(event,text,content) {
-  const key=text.match(/engine_(?:npc|enemy)\s*:\s*([\w-]+)/i)?.[1],template=content.gameplay?.npcs?.[key];
+  const key=npcTag(parseEngineTags(text)),template=content.gameplay?.npcs?.[key];
   if(!template)return false;
   // enemyId remains a truthy compatibility flag for the existing navigation/UI.
   Object.assign(event,{npcKey:key,enemyId:-1,npcTemplate:structuredClone(template),noRespawn:template.respawnMs===0});
@@ -15,7 +16,7 @@ export function resetNpc(event) {
   event.maxHp=event.hp;event.maxMp=event.mp;
 }
 export function configureStructure(event,text,content) {
-  const key=text.match(/engine_structure\s*:\s*([\w-]+)/i)?.[1];if(!key)return false;
+  const key=parseEngineTags(text).engine_structure;if(!key)return false;
   const template=content.gameplay?.structures?.[key]||{};
   const hp=Math.max(1,number(template.hp,300));
   Object.assign(event,{structureKey:key,hp,maxHp:hp,enemyId:0,name:template.name||event.name});return true;

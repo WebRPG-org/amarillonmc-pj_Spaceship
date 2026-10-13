@@ -1,5 +1,6 @@
 import {configureNpc} from './npcs.mjs';
-/** Authoring contract: map.note contains <modernRound>; event tags are RM comments. */
+import {eventTags,npcTag} from './event-tags.mjs';
+/** Authoring contract: map.note contains <modernRound>; event.note overrides legacy RM comments. */
 export const MODERN_ROUND_MAPS = Object.freeze([31, 32, 33, 34, 35, 36, 37, 38, 39]);
 
 // Keep the original routes' timing. The new districts close in three later waves.
@@ -11,12 +12,11 @@ export const MODERN_ZONE_SCHEDULE = Object.freeze([
 
 export const isModernRoundMap = map => MODERN_ROUND_MAPS.includes(map.id) && /<modernRound>/i.test(map.note || '');
 
-export function modernEventTags(page) {
-  const text = (page?.list || []).filter(command => [108, 408].includes(command.code)).map(command => command.parameters?.[0] || '').join('\n');
-  return {
-    container: text.match(/^\s*engine_container\s*:\s*(\w+)\s*$/im)?.[1],
-    enemy: text.match(/^\s*engine_enemy\s*:\s*(\w+)\s*$/im)?.[1]
-  };
+export function modernEventTags(raw,page) {
+  // Keep the former page-only helper usable by integrations.
+  if(raw?.list&&!page){page=raw;raw={};}
+  const tags=eventTags(raw,page);
+  return {container:tags.engine_container,enemy:npcTag(tags)};
 }
 
 function weaponProfile(content, mode) {
@@ -44,14 +44,14 @@ function containerItems(content, type) {
 
 /** Convert the authored events in place, preserving their editor-visible positions and images. */
 export function decorateModernDistrict(round, map) {
-  if (!isModernRoundMap(map.raw)) return;
   for (const event of map.events.values()) {
-    const page = event.pages[0], tags = modernEventTags(page);
+    const page = event.pages[0], tags = modernEventTags(event.raw,page);
+    if(page?.engineDisabledReason)continue;
     if (tags.container && tags.enemy) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 同时标记为箱子与敌人`);
     if (tags.container) {
       const containerId = `modern:${map.id}:${event.eventId}`;
       event.service = {kind: 'round', action: 'container', containerId};
-      round.containers.set(containerId, {items: containerItems(round.world.content, tags.container), opened: false});
+      round.containers.set(containerId, {items: structuredClone(round.scenario?.containerLoot?.[tags.container] || containerItems(round.world.content, tags.container)), opened: false});
     }
     if (tags.enemy) {
       if (!configureNpc(event,`engine_npc:${tags.enemy}`,round.world.content)) throw new Error(`地图 ${map.id} 事件 ${event.eventId} 的实时 NPC 模板不存在：${tags.enemy}`);

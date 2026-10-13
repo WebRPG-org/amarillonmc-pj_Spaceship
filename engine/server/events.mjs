@@ -79,6 +79,7 @@ export class EventRuntime {
         if(!this.tasks.has(key)&&(this.cooldowns.get(key)||0)<=this.time)this.makeTask(player,event,page.list||[],key,index,true);
       }
       for(const ce of this.content.database.CommonEvents||[])if(ce&&[1,2].includes(ce.trigger)&&this.switch(player,ce.switchId)){
+        if(ce.engineDisabledReason){this.diagnostic(player,ce.engineDisabledReason,`disabled:common:${ce.id}`);continue;}
         const key=`${player.id}:common:${ce.id}`;if(!this.tasks.has(key)&&(this.cooldowns.get(key)||0)<=this.time)this.makeTask(player,{id:`common:${ce.id}`,eventId:0,mapId:player.mapId,name:ce.name},ce.list||[],key,0,true);
       }
     }
@@ -109,6 +110,14 @@ export class EventRuntime {
     }return used;
   }
   skipTo(task,indent,codes){while(task.index<task.list.length){const c=task.list[task.index];if(c.indent<indent||c.indent===indent&&codes.includes(c.code))return;task.index++;}}
+  breakLoop(task){
+    const loops=[];
+    for(let index=0;index<task.index-1;index++){const command=task.list[index];if(command.code===112)loops.push(index);else if(command.code===413)loops.pop();}
+    const start=loops.at(-1);if(start===undefined)throw new Error('Break loop has no enclosing loop');
+    let depth=1;
+    for(let index=start+1;index<task.list.length;index++){const command=task.list[index];if(command.code===112)depth++;else if(command.code===413&&--depth===0){task.index=index+1;for(const key of Object.keys(task.branches))if(+key>=(task.list[start].indent||0))delete task.branches[key];for(const key of Object.keys(task.choiceBranches))if(+key>=(task.list[start].indent||0))delete task.choiceBranches[key];return;}}
+    throw new Error('Loop has no matching repeat');
+  }
   text(text){return String(text);}
   textContext(player,text=null){return this.presentation.textContext(player,text);}
   overheadFor(player,event,page=this.pageFor(player,event)){return this.presentation.overheadFor(player,event,page);}
@@ -164,10 +173,10 @@ export class EventRuntime {
       case 411:if(task.branches[indent])this.skipTo(task,indent,[412]);return;
       case 412:delete task.branches[indent];return;
       case 112:return;
-      case 113:this.skipTo(task,indent,[413]);task.index++;return;
+      case 113:this.breakLoop(task);return;
       case 413:{for(let i=task.index-2;i>=0;i--)if(task.list[i].code===112&&task.list[i].indent===indent){task.index=i+1;task.wait=1/60;break;}return;}
       case 115:this.finish(task);return;
-      case 117:{const ce=this.content.database.CommonEvents?.[p[0]];if(!ce)throw new Error(`Missing common event ${p[0]}`);if(task.stack.length>=16)throw new Error('Common event recursion limit');task.stack.push({list:task.list,index:task.index,branches:task.branches,choiceBranches:task.choiceBranches});task.list=ce.list;task.index=0;task.branches={};task.choiceBranches={};return;}
+      case 117:{const ce=this.content.database.CommonEvents?.[p[0]];if(!ce)throw new Error(`Missing common event ${p[0]}`);if(ce.engineDisabledReason)throw new Error(ce.engineDisabledReason);if(task.stack.length>=16)throw new Error('Common event recursion limit');task.stack.push({list:task.list,index:task.index,branches:task.branches,choiceBranches:task.choiceBranches});task.list=ce.list;task.index=0;task.branches={};task.choiceBranches={};return;}
       case 118:return;
       case 119:{const i=task.list.findIndex(c=>c.code===118&&c.parameters[0]===p[0]);if(i>=0)task.index=i+1;return;}
       case 121:if(p[1]-p[0]>1000)throw new Error('Switch range limit');for(let id=p[0];id<=p[1];id++)this.setSwitch(player,id,p[2]===0);return;

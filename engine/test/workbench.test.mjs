@@ -61,12 +61,12 @@ test('gameplay missing-file compatibility and partial saves preserve future keys
   assert.throws(()=>validateGameplay({...original,scenarios:{bad:{name:'bad',type:'adventure',mapIds:[2],spawn:{mapId:2,x:0,y:0},durationSeconds:10,maxPlayers:1}}},content));
 });
 
-test('new entities are legal RM events and cannot insert arbitrary event scripts',async t=>{
+test('new entities use native defaults and reject unknown patch keys',async t=>{
   const {editor}=await fixture(t),document=await editor.read('map',1);
   const result=await editor.save('map',1,{revision:document.revision,patch:{events:[{id:2,name:'回收磁盘',x:1,y:1,tags:{engine_service:'meteorDisk'}}]}});
   assert.equal(result.data.events[2].pages[0].list.at(-1).code,0);assert.ok(result.data.events[2].pages[0].conditions);assert.match(result.data.events[2].note,/engine_service:meteorDisk/);
   assert.throws(()=>editor.apply('map',map,{events:[{id:1,pages:[{list:[{code:355,parameters:['eval()']}]}]}]},1));
-  assert.throws(()=>editor.apply('map',map,{events:[{id:map.events.length+1,x:1,y:1}]},1),'New event IDs cannot create sparse invalid JSON arrays');
+  assert.throws(()=>editor.apply('map',map,{events:[{id:2,x:1,y:1,unknownPatchKey:true}]},1));
 });
 
 test('MV and MZ animation edits preserve frames, timings and unrelated metadata',async t=>{

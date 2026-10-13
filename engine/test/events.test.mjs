@@ -23,6 +23,22 @@ test('expression parser supports current arithmetic without executing JavaScript
   for(const source of ['process.exit()','globalThis.x=1','(1).constructor.constructor("return process")()','Math.random()','1/0'])assert.throws(()=>evaluateExpression(source));
 });
 
+test('break loop inside a condition exits the nearest loop and keeps the surrounding loop running',()=>{
+  const f=fixture([
+    cmd(112),cmd(122,[1,1,1,0,1],1),
+    cmd(112,[],1),cmd(111,[0,1,0],2),cmd(113,[],3),cmd(412,[],2),cmd(122,[2,2,1,0,100],2),cmd(413,[],1),
+    cmd(122,[2,2,1,0,1],1),cmd(111,[1,1,0,2,1],1),cmd(113,[],2),cmd(412,[],1),cmd(413),
+    cmd(122,[3,3,0,0,42]),cmd(0)
+  ],{switches:{1:true}});
+  f.runtime.start(f.player,f.event);for(let i=0;i<10&&f.runtime.tasks.size;i++)f.runtime.update(.1);
+  assert.equal(f.player.variables[1],2);assert.equal(f.player.variables[2],2);assert.equal(f.player.variables[3],42);assert.equal(f.runtime.tasks.size,0);assert.deepEqual(f.notices,[]);
+});
+
+test('break outside a loop diagnoses malformed authored commands instead of skipping the next branch',()=>{
+  const f=fixture([cmd(113),cmd(122,[1,1,0,0,42]),cmd(0)]);f.runtime.start(f.player,f.event);
+  assert.equal(f.player.variables[1],undefined);assert.match(f.notices[0],/no enclosing loop/);
+});
+
 test('text and choices suspend only the interaction and execute one selected branch',()=>{
   const f=fixture([cmd(101),cmd(401,['Choose']),cmd(102,[['Potion','Gold'],-1,0]),cmd(402,[0,'Potion']),cmd(126,[1,0,0,2],1),cmd(402,[1,'Gold']),cmd(125,[0,0,10],1),cmd(404),cmd(0)]);
   assert.equal(f.runtime.start(f.player,f.event),true);

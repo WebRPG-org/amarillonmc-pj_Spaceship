@@ -1,12 +1,19 @@
 import {Renderer} from './renderer.mjs';
+import {MapWorkspace} from './editor-maps-workspace.mjs';
 
 const $=s=>document.querySelector(s),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state={tab:'scenarios',selected:null,group:'shops',doc:null,dirty:false};
-let content,gameplay,renderer,selectedEvent,placing=false;
+let content,gameplay,renderer,mapWorkspace,assetCache;
 const status=(text,error=false)=>{$('#status').textContent=text;$('#status').classList.toggle('error',error);};
 async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-Editor-Request':'1',...options.headers}}),value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP ${response.status}`);return value;}
 const read=(kind,id)=>api(`/api/editor/document?kind=${kind}${id?`&id=${id}`:''}`);
-async function save(kind,patch,id){const value=await api(`/api/editor/document?kind=${kind}${id?`&id=${id}`:''}`,{method:'PUT',body:JSON.stringify({revision:state.doc.revision,patch})});state.doc=value;state.dirty=false;status(`已保存。请重启服务应用配置。备份：${value.backup}`);return value;}
+function busy(value){$('#workspace').inert=value;$('#navigation').inert=value;$('#reload').disabled=value;$('#workspace').setAttribute('aria-busy',String(value));}
+async function save(kind,patch,id){
+  if(state.saving)throw new Error('正在保存，请稍候');state.saving=true;busy(true);
+  try{const value=await api('/api/editor/document?kind='+kind+(id?'&id='+id:''),{method:'PUT',body:JSON.stringify({revision:state.doc.revision,patch})});state.doc=value;state.dirty=false;status('已保存。请重启服务应用配置。备份：'+value.backup);return value;}
+  finally{state.saving=false;busy(!!state.navigating);}
+}
+
 function field(label,name,value,type='text',extra=''){return `<label>${esc(label)}<input name="${esc(name)}" type="${type}" value="${esc(value)}" ${extra}></label>`;}
 function area(label,name,value){return `<label class="wide">${esc(label)}<textarea name="${esc(name)}">${esc(value)}</textarea></label>`;}
 function options(values,current){const all=[...values];if(current!==undefined&&current!==null&&!all.some(v=>String(Array.isArray(v)?v[0]:v)===String(current)))all.unshift([current,`${current}（原配置）`]);return all.map(v=>{const[value,label]=Array.isArray(v)?v:[v,v];return `<option value="${esc(value)}" ${String(value)===String(current)?'selected':''}>${esc(label)}</option>`;}).join('');}
@@ -21,7 +28,8 @@ function bind(id,fn){$(`#${id}`)?.addEventListener('click',()=>Promise.resolve()
 function details(html){$('#details').innerHTML=html;$('#details').oninput=()=>state.dirty=true;$('#details').onchange=()=>state.dirty=true;}
 function toolbar(title,extra=''){ $('#toolbar').innerHTML=`<strong>${esc(title)}</strong>${extra}`;}
 function list(entries,selected,handler){$('#list').innerHTML=entries.map(([id,label])=>`<button class="${String(id)===String(selected)?'active':''}" data-id="${esc(id)}">${esc(label)}</button>`).join('');$('#list').onclick=event=>{const b=event.target.closest('[data-id]');if(b)go(()=>handler(b.dataset.id));};}
-async function go(fn){if(state.dirty&&!confirm('有尚未保存的修改。放弃这些修改并继续？'))return;try{if(state.dirty&&state.tab==='maps'){state.doc=await read('map',state.selected);selectedEvent=null;placing=false;}state.dirty=false;await fn();}catch(error){status(error.message,true);}}
+async function go(fn){if(state.navigating||state.saving)return;if(state.dirty&&!confirm('有尚未保存的修改。放弃这些修改并继续？'))return;state.navigating=true;busy(true);try{state.dirty=false;await fn();}catch(error){status(error.message,true);}finally{state.navigating=false;busy(!!state.saving);}}
+
 function rowList(name,rows,type){
   const extra=type==='goods'?'价格':type==='drops'?'概率':'数量';
   return `<div class="wide"><div class="row rowHeader"><span>类型</span><span>物品</span><span>${extra}</span><span></span></div><div id="${name}">${rows.map(row=>itemRow(row,type)).join('')}</div><button type="button" data-add="${name}" data-row-type="${type}">＋ 添加物品</button></div>`;
@@ -43,23 +51,18 @@ async function scenarios(id){
 }
 
 function ensureRenderer(){
-  if(renderer)return renderer;renderer=new Renderer($('#map'));renderer.showGrid=true;
-  const draw=renderer.draw.bind(renderer);renderer.draw=(...args)=>{draw(...args);if(state.tab!=='maps'||!selectedEvent)return;const ctx=renderer.ctx,ratio=Math.min(2,devicePixelRatio||1),p=renderer.screenPoint(selectedEvent.x,selectedEvent.y);ctx.save();ctx.setTransform(ratio,0,0,ratio,0,0);ctx.strokeStyle='#ffda79';ctx.lineWidth=3;ctx.strokeRect(p.x,p.y,48*renderer.zoom,48*renderer.zoom);ctx.restore();};
-  let drag;$('#map').oncontextmenu=e=>e.preventDefault();$('#map').onpointerdown=e=>{if(e.button===2){drag={x:e.clientX,y:e.clientY};$('#map').setPointerCapture(e.pointerId);return;}if(state.tab==='maps'){const p=renderer.screenToMap(e.clientX,e.clientY),x=Math.floor(p.x),y=Math.floor(p.y),map=state.doc.data;if(x<0||y<0||x>=map.width||y>=map.height)return;if(placing&&selectedEvent){selectedEvent.x=x;selectedEvent.y=y;placing=false;state.dirty=true;$('[name=eventX]').value=x;$('[name=eventY]').value=y;mapSnapshot();}else{const event=map.events.find(v=>v&&v.x===x&&v.y===y);if(event)go(()=>selectEvent(event.id));}}};$('#map').onpointermove=e=>{if(drag){renderer.pan((drag.x-e.clientX)/(renderer.zoom*48),(drag.y-e.clientY)/(renderer.zoom*48));drag={x:e.clientX,y:e.clientY};}};$('#map').onpointerup=()=>drag=null;$('#map').onwheel=e=>{e.preventDefault();renderer.zoom=Math.max(.2,Math.min(2,renderer.zoom*(e.deltaY>0?.9:1.1)));};return renderer;
+  if(renderer)return renderer;renderer=new Renderer($('#map'));let drag;
+  $('#map').oncontextmenu=e=>e.preventDefault();$('#map').onpointerdown=e=>{if(e.button===2){drag={x:e.clientX,y:e.clientY};$('#map').setPointerCapture(e.pointerId);}};
+  $('#map').onpointermove=e=>{if(drag){renderer.pan((drag.x-e.clientX)/(renderer.zoom*48),(drag.y-e.clientY)/(renderer.zoom*48));drag={x:e.clientX,y:e.clientY};}};
+  $('#map').onpointerup=()=>drag=null;$('#map').onwheel=e=>{e.preventDefault();renderer.zoom=Math.max(.2,Math.min(2,renderer.zoom*(e.deltaY>0?.9:1.1)));};return renderer;
 }
-function mapSnapshot(){const map=state.doc.data;renderer.accept({mapId:Number(state.selected),players:[],events:map.events.filter(Boolean).map(e=>selectedEvent?.id===e.id?selectedEvent:e).map(e=>({id:`event:${e.id}`,name:e.name,x:e.x,y:e.y,...e.pages?.[0]?.image,kind:'event'})),drops:[],projectiles:[]});}
 async function maps(id){
-  state.selected=Number(id)||content.maps[0].id;state.doc=await read('map',state.selected);gameplay=(await read('gameplay')).data;selectedEvent=null;
-  toolbar('地图与实体',`<select id="mapChoice">${options(mapOptions(),state.selected)}</select>${button('添加实体','newEvent')}`);$('#mapChoice').onchange=()=>go(()=>maps($('#mapChoice').value));
-  ensureRenderer().setMap({...state.doc.data,id:state.selected,threeD:{enabled:false}},content.database.Tilesets[state.doc.data.tilesetId],{...content.database,Animations:[]});renderer.zoom=Math.min(1,Math.max(.3,600/(state.doc.data.width*48)));mapSnapshot();eventList();details('<h2>选择地图上的事件</h2><p class="hint">点选实际地图上的事件，或从左侧列表选择。修改名称、坐标与实体类型；RM 原始事件页与指令保持不变。</p>');
-  bind('newEvent',()=>{const id=state.doc.data.events.length;selectedEvent={id,name:`新实体 ${id}`,x:1,y:1,note:'',pages:[{image:{characterName:'',characterIndex:0,tileId:0}}]};state.doc.data.events.push(selectedEvent);state.dirty=true;renderEvent();mapSnapshot();eventList();placing=true;status('点击地图放置新实体，然后选择类型并保存。');});
-}
-function eventList(){list(state.doc.data.events.filter(Boolean).map(e=>[e.id,`${e.id} · ${e.name}`]),selectedEvent?.id,id=>selectEvent(Number(id)));}
-function selectEvent(id){selectedEvent=structuredClone(state.doc.data.events.find(e=>e?.id===id));if(!selectedEvent){details('<p>该事件尚未保存，请重新添加。</p>');eventList();mapSnapshot();return;}renderEvent();eventList();renderer.viewCenter={x:selectedEvent.x+.5,y:selectedEvent.y+.5};}
-function readTag(note,key){return String(note||'').match(new RegExp(`(?:^|\\n)\\s*${key}\\s*:\\s*([\\w-]+)`,'i'))?.[1]||'';}
-function renderEvent(){
-  const e=selectedEvent,img=e.pages?.[0]?.image||{};details(`<h2>${esc(e.name)}</h2><p class="hint">事件 ${e.id} · 地图 ${state.selected} · ${e.pages?.length||1} 个事件页。下列实体标签由运行时直接读取。</p><div class="fields">${field('名称','eventName',e.name)}${field('X','eventX',e.x,'number')}${field('Y','eventY',e.y,'number')}${select('NPC 模板','npc',[['','无'],...Object.entries(gameplay.npcs||{}).map(([id,n])=>[id,n.name])],readTag(e.note,'engine_npc'))}${select('可破坏结构','structure',[['','无'],...Object.keys(gameplay.structures||{}).map(id=>[id,id])],readTag(e.note,'engine_structure'))}${select('冒险功能','service',[['','无'],['meteorDisk','回收磁盘'],['meteorExit','冒险撤离入口']],readTag(e.note,'engine_service'))}${select('商店标识','shop',[['','无'],...Object.entries(gameplay.shops||{}).map(([id,s])=>[id,s.name])],readTag(e.note,'engine_shop'))}${select('物资箱模板','container',[['','无'],...[...new Set(Object.values(gameplay.scenarios||{}).flatMap(s=>Object.keys(s.containerLoot||{})))].map(id=>[id,id])],readTag(e.note,'engine_container'))}${field('角色图名称（不含扩展名）','characterName',img.characterName||'')}${field('角色图索引 0–7','characterIndex',img.characterIndex||0,'number')}${field('图块 ID（0 为角色图）','tileId',img.tileId||0,'number')}${area('原始事件 Note（保留其他插件内容）','note',e.note||'')}</div><div class="actions">${button('在地图上移动','place')}${button('保存事件','save','primary')}</div><p class="hint">室内／室外在“副本规则”中配置。保存时只修改本事件允许的字段，不覆盖整张地图或其他事件。</p>`);
-  bind('place',()=>{placing=true;status('点击地图选择事件的新坐标。');});bind('save',async()=>{const change={id:e.id,name:val('eventName'),x:val('eventX',true),y:val('eventY',true),note:val('note'),tags:{engine_npc:val('npc'),engine_structure:val('structure'),engine_service:val('service'),engine_shop:val('shop'),engine_container:val('container')},image:{characterName:val('characterName'),characterIndex:val('characterIndex',true),tileId:val('tileId',true)}};await save('map',{events:[change]},state.selected);selectedEvent=state.doc.data.events[e.id];mapSnapshot();eventList();renderEvent();});
+  state.selected=Number(id)||content.maps[0].id;
+  const results=await Promise.all([read('map',state.selected),read('gameplay'),api('/api/editor/maps'),assetCache?Promise.resolve(assetCache):Promise.all(['characters','faces','parallaxes','bgm','bgs','se','me'].map(async kind=>[kind,(await api('/api/editor/assets?kind='+kind)).names])).then(Object.fromEntries)]);
+  [state.doc]=results;gameplay=results[1].data;assetCache=results[3];content.maps=results[2].maps;
+  mapWorkspace?.dispose();
+  mapWorkspace=new MapWorkspace({root:$('#mapEditorRoot'),list:$('#list'),toolbar:$('#toolbar'),content,gameplay,doc:state.doc,catalog:results[2],assets:assetCache,api,read,save:(patch,id)=>save('map',patch,id),onDirty:value=>state.dirty=value,onNavigate:id=>go(()=>maps(id)),status});
+  $('#details').innerHTML='';state.dirty=false;
 }
 
 async function economy(id){
@@ -107,6 +110,6 @@ async function admin(){
   bind('announce',async()=>{await api('/api/editor/admin',{method:'POST',body:JSON.stringify({action:'announce',message:val('announcement')})});state.dirty=false;status('公告已发送。');});
 }
 
-async function tab(name){state.tab=name;state.selected=null;selectedEvent=null;placing=false;$('#workspace').classList.toggle('with-preview',['maps','animations'].includes(name));for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===name);if(renderer){renderer.showGrid=name==='maps';renderer.effekseer.reset();}await({scenarios,maps,economy,weapons,animations,admin}[name])();}
+async function tab(name){mapWorkspace?.dispose();mapWorkspace=null;state.tab=name;state.selected=null;$('#workspace').classList.toggle('map-workspace',name==='maps');$('#workspace').classList.toggle('with-preview',['maps','animations'].includes(name));for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===name);if(renderer){renderer.showGrid=name==='maps';renderer.effekseer.reset();}await({scenarios,maps,economy,weapons,animations,admin}[name])();}
 $('#navigation').onclick=event=>{const b=event.target.closest('[data-tab]');if(b)go(()=>tab(b.dataset.tab));};$('#reload').onclick=()=>go(()=>tab(state.tab));window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
 try{content=await api('/api/content');await tab('scenarios');status('工程已载入。先选择内容，保存前会检查文件版本。');}catch(error){status(error.message,true);}

@@ -1,6 +1,8 @@
 import {World} from './world.mjs';
 import {addInventory} from './combat.mjs';
-import {MODERN_ROUND_MAPS, MODERN_ZONE_SCHEDULE, isModernRoundMap, modernEventTags, decorateModernDistrict} from './modern-district.mjs';
+import {MODERN_ROUND_MAPS, MODERN_ZONE_SCHEDULE, isModernRoundMap, decorateModernDistrict} from './modern-district.mjs';
+import {eventTags} from './event-tags.mjs';
+import {prepareRoundEvents} from './round-events.mjs';
 
 export const ROUND_MAPS=[11,12,13,20,21,22,...MODERN_ROUND_MAPS];
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
@@ -23,25 +25,8 @@ export function ensureGameContent(content){
 
 /** Keep authored map transitions, replace old test rewards/PvP scripts with scoped services. */
 function roundContent(content,scenario){
-  const maps=new Map();
-  for(const id of scenario.mapIds){
-    const original=content.getMap(id);if(!original)throw new Error(`副本地图 ${id} 不存在`);
-    if(scenario.type==='adventure'){maps.set(id,structuredClone(original));continue;}
-    if(MODERN_ROUND_MAPS.includes(id)&&!isModernRoundMap(original))throw new Error(`副本地图 ${id} 缺少 <modernRound> 标记`);
-    const map={...original,events:original.events.map(event=>{
-      if(!event)return null;
-      const pages=event.pages.filter(p=>p.list.some(c=>c.code===201&&c.parameters[0]===0&&scenario.mapIds.includes(c.parameters[1])));
-      if(pages.length)return{...event,pages:pages.map(p=>({...p,conditions:{},list:p.list.filter(c=>[0,201,250].includes(c.code))}))};
-      // Noninteractive decorations are safe to retain; no old autorun scripts enter a round.
-      const page=event.pages.find(p=>p.list.every(c=>[0,108,408].includes(c.code)));
-      if(page&&isModernRoundMap(original)){
-        const tags=modernEventTags(page);
-        if(tags.container||tags.enemy)return{...event,pages:[{...page,conditions:{},trigger:0,list:page.list}]};
-      }
-      return page?{...event,pages:[{...page,conditions:{},trigger:0,list:[{code:0,parameters:[]}]}]}:null;
-    })};maps.set(id,map);
-  }
-  return{...content,maps,getMap:id=>maps.get(Number(id))};
+  for(const id of scenario.mapIds)if(scenario.type==='dts'&&MODERN_ROUND_MAPS.includes(id)&&!isModernRoundMap(content.getMap(id)))throw new Error(`副本地图 ${id} 缺少 <modernRound> 标记`);
+  return prepareRoundEvents(content,scenario);
 }
 
 export function addService(world,map,{id,name,x,y,service,characterName='!Crystal',characterIndex=0}){
@@ -77,10 +62,10 @@ export class Round {
     map.pvp=this.mode==='pvpve';
     if(this.scenario.type==='adventure'){
       for(const event of map.events.values()){
-        const text=[event.raw?.note,...(event.pages||[]).flatMap(page=>page.list.filter(c=>[108,408].includes(c.code)).map(c=>c.parameters[0]))].join('\n');
-        const action=text.match(/engine_service\s*:\s*(meteorDisk|meteorExit)\b/i)?.[1];
+        if(event.pages.every(page=>page.engineDisabledReason))continue;
+        const tags=eventTags(event.raw),action=['meteorDisk','meteorExit'].find(value=>value.toLowerCase()===tags.engine_service?.toLowerCase());
         if(action)event.service={kind:'round',action};
-        const lootKey=text.match(/engine_container\s*:\s*([A-Za-z0-9_-]+)/i)?.[1],items=this.scenario.containerLoot?.[lootKey];
+        const lootKey=tags.engine_container,items=this.scenario.containerLoot?.[lootKey];
         if(!action&&Array.isArray(items)){
           const containerId=`adventure:${map.id}:${event.eventId}`;
           event.service={kind:'round',action:'container',containerId};this.containers.set(containerId,{items:structuredClone(items),opened:false});

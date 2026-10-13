@@ -1,9 +1,10 @@
 import {addInventory} from './combat.mjs';
+import {parseEngineTags} from './event-tags.mjs';
 
 const databases={item:'Items',weapon:'Weapons',armor:'Armors'};
 export const shopAllowed=(world,shop)=>!!shop&&(shop.scope==='world'?!world.scenario:shop.scope==='dts'?world.scenario?.type==='dts':!shop.scope);
 export function bindShopTag(world,event,text){
-  const key=text.match(/engine_shop\s*:\s*([\w-]+)/i)?.[1];if(!key)return;
+  const key=parseEngineTags(text).engine_shop;if(!key)return;
   event.shopTag=key;
   if(shopAllowed(world,world.content.gameplay?.shops?.[key]))event.service={kind:'shop',shopId:key};
 }
