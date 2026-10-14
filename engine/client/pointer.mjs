@@ -45,12 +45,13 @@ export class PointerGesture {
   cancel() {this.points.clear(); this.blocked = false;}
 }
 
-const modeNames = {throw: '投掷', thrown: '投掷', projectile: '远程', firearm: '枪械', gun: '枪械', staff: '法杖', magic: '法杖', melee: '近战', club: '范围近战'};
+const modeNames = {throw: '投掷', thrown: '投掷', projectile: '远程', firearm: '枪械', gun: '枪械', staff: '法杖', magic: '法杖', melee: '近战', club: '范围近战', cleave: '劈斩'};
 export function weaponDetails(entry, profile, inventory = [], itemName = id => `物品 #${id}`) {
   const details = [];
   if(entry?.itemId===65)details.push('飞火流星 · 以引导结束时自身位置为中心的 3×3 范围','消耗全部 MP · 敌我皆伤，包含自己','只能在室外发动；死亡或进入室内取消，MP 不返还');
   if (profile) {
-    details.push(`${modeNames[profile.mode] || profile.mode || '近战'} · 距离 ${profile.range || 1} 格`);
+    details.push(profile.mode === 'cleave' ? '劈斩 · 面前紧邻横排三格' : `${modeNames[profile.mode] || profile.mode || '近战'} · 距离 ${profile.range || 1} 格`);
+    if (profile.movementSpeed > 0 && profile.movementSpeed < 1) details.push(`装备时移动速度降低 ${Math.round((1-profile.movementSpeed)*100)}%`);
     const costs = [];
     if (profile.durabilityCost > 0) costs.push(`耐久 ${profile.durabilityCost}`);
     if (profile.mpCost > 0) costs.push(`MP ${profile.mpCost}`);

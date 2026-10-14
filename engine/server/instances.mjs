@@ -4,6 +4,7 @@ import {Round,ensureGameContent} from './rounds.mjs';
 import {normalizeOfflineBehavior} from './offline-ai.mjs';
 import {PUBLIC_CITY_SERVICES,bindPublicCityServices,publicCityArrival} from './public-city.mjs';
 import {ChatService} from './chat.mjs';
+import {TUTORIAL_ID} from './tutorial.mjs';
 
 /** Routes each account to exactly one authoritative world; map ids are local to that world. */
 export class GameHost {
@@ -24,7 +25,8 @@ export class GameHost {
   async decorateLobby(map){bindPublicCityServices(map);}
   serviceOpen(player,service='instance'){
     const world=this.playerWorld(player.id);if(service==='appearance'){world.send(player.id,{type:'service',service:'appearance',action:'open'});return;}
-    world.send(player.id,{type:'service',service:'instance',action:'open',scenario:this.scenario,scenarios:Object.values(this.scenarios),instances:[...this.rounds.values()].filter(r=>r.status==='waiting'&&r.scenario.maxPlayers>1).map(r=>r.snapshot()),modes:['pve','pvpve'],current:this.locations.get(player.id)?.snapshot()||null});
+    const scenarios=service==='tutorialEntrance'?[this.scenarios[TUTORIAL_ID]].filter(Boolean):Object.values(this.scenarios);
+    world.send(player.id,{type:'service',service:'instance',action:'open',scenario:this.scenario,scenarios,instances:[...this.rounds.values()].filter(r=>r.status==='waiting'&&r.scenario.maxPlayers>1&&service!=='tutorialEntrance').map(r=>r.snapshot()),modes:['pve','pvpve'],current:this.locations.get(player.id)?.snapshot()||null});
   }
   async connect(account,send){await this.init();if(this.connecting.has(account.id))throw new Error('角色正在连接');this.connecting.add(account.id);
     try{while(this.transitions.has(account.id))await this.transitions.get(account.id).catch(()=>{});const settling=this.locations.get(account.id);if(settling?.status==='ending'){await (settling._finishPromise||this.finishRound(settling,settling.pendingResult));}const existing=this.getPlayer(account.id);if(existing){const p=await this.playerWorld(account.id).reconnect(account.id,send);return p;}
@@ -37,10 +39,10 @@ export class GameHost {
   applyProfile(player,profile){player.profile=structuredClone(profile);player.appearance=structuredClone(profile.appearance||null);player.offlineBehavior=normalizeOfflineBehavior(profile.offlineBehavior);this.playerWorld(player.id).offlineAI.cancel(player);if(profile.appearance?.characterName){player.characterName=profile.appearance.characterName;player.characterIndex=profile.appearance.characterIndex||0;}}
   async latestProfile(id,fallback={}){try{return await this.store.loadProfile?.(id)||fallback;}catch(error){this._diagnostics.set(`profile:${id}`,error.message);return fallback;}}
   updateProfile(id,profile){const p=this.getPlayer(id);if(p){this.applyProfile(p,profile);this.playerWorld(id).markDirty(p);this.playerWorld(id).sendSnapshot(p);}return p;}
-  assertAtEntrance(player){const entrance=PUBLIC_CITY_SERVICES.instance,guide=this.world.maps.get(entrance.mapId)?.events.get(`service:${entrance.id}`);if(player.dead||player._dying||player.mapId!==entrance.mapId||!guide||Math.abs(player.x-guide.x)+Math.abs(player.y-guide.y)>1)throw new Error('请到中央广场的远征接引员旁进入副本');}
+  assertAtEntrance(player,definitionId){const entrance=PUBLIC_CITY_SERVICES.instance,map=this.world.maps.get(entrance.mapId),guides=[map?.events.get(`service:${entrance.id}`),...(definitionId===TUTORIAL_ID?[...(map?.events.values()||[])].filter(e=>e.service?.kind==='tutorialEntrance'):[])].filter(Boolean);if(player.dead||player._dying||player.mapId!==entrance.mapId||!guides.some(guide=>Math.abs(player.x-guide.x)+Math.abs(player.y-guide.y)<=1))throw new Error('请到中央广场的远征接引员旁进入副本；新手教学也可找 ROSE');}
   async disconnect(id){if(this.transitions.has(id))await this.transitions.get(id).catch(()=>{});const r=this.locations.get(id);if(r?.status==='ending')await (r._finishPromise||this.finishRound(r,r.pendingResult)).catch(()=>{});return this.playerWorld(id).disconnect(id);}
   exclusive(id,operation){if(this.transitions.has(id))return Promise.reject(new Error('正在切换世界，请稍候'));const work=Promise.resolve().then(operation);this.transitions.set(id,work);return work.finally(()=>{if(this.transitions.get(id)===work)this.transitions.delete(id);});}
-  async create(player,mode,definitionId=this.scenario.id){if(!['pve','pvpve'].includes(mode))throw new Error('请选择PvE或PvPvE');if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);
+  async create(player,mode,definitionId=this.scenario.id){if(!['pve','pvpve'].includes(mode))throw new Error('请选择PvE或PvPvE');if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player,definitionId);
     if(typeof definitionId!=='string'||!Object.hasOwn(this.scenarios,definitionId))throw new Error('副本定义不存在');
     const scenario=this.scenarios[definitionId];if(scenario.type==='adventure')mode='pve';
     if(this.rounds.size+(this.pendingCreations||0)>=32)throw new Error('当前副本已达到测试容量，请稍后再试');
@@ -54,7 +56,7 @@ export class GameHost {
       }catch(error){await this.store.finishRound(id,{reason:'creation-failed'});this.rounds.delete(id);throw error;}
     }finally{if(reserved)this.pendingCreations--;}
   }
-  async join(player,instanceId){if(this.locations.has(player.id))throw new Error('你已经在副本内');this.assertAtEntrance(player);const round=this.rounds.get(instanceId);if(!round||round.status!=='waiting')throw new Error('该等待副本不存在');if(round.scenario.maxPlayers===1&&round.ownerId!==player.id)throw new Error('这是另一位玩家的私人冒险');if(round.members.size>=round.scenario.maxPlayers)throw new Error('副本已满');
+  async join(player,instanceId){if(this.locations.has(player.id))throw new Error('你已经在副本内');const round=this.rounds.get(instanceId);if(!round||round.status!=='waiting')throw new Error('该等待副本不存在');this.assertAtEntrance(player,round.scenario.id);if(round.scenario.maxPlayers===1&&round.ownerId!==player.id)throw new Error('这是另一位玩家的私人冒险');if(round.members.size>=round.scenario.maxPlayers)throw new Error('副本已满');
     return round.serialize(async()=>{
       if(round.status!=='waiting'||round.members.size>=round.scenario.maxPlayers)throw new Error('副本已开始或已满');
       const state=round.seed(player),account=await this.store.joinRound(round.id,player.id,state);
@@ -113,6 +115,7 @@ export class GameHost {
       return this.exclusive(player.id,async()=>{
         const profile=await this.store.loadProfile(player.id),titleId=message.titleId||null;
         if(titleId&&(!this.content.gameplay?.titles?.[titleId]||!profile.titles?.includes(titleId)))throw new Error('尚未获得这个头衔');
+        if(titleId&&this.content.gameplay.titles[titleId].equipInWorld)throw new Error('这是永久武器，请在主世界背包中装备对应武器');
         const patch={equippedTitle:titleId};
         const updated=this.store.updateProfile?await this.store.updateProfile(player.id,patch):await this.store.saveProfile(player.id,{...profile,...patch});
         this.applyProfile(player,updated);this.world.sendSnapshot(player);this.notice(player,titleId?'头衔已装备，将在允许该效果的下一次副本入场时生效':'头衔已卸下');

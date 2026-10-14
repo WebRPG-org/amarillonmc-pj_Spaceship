@@ -172,7 +172,7 @@ export class ContentWorkbench {
       keys(patch,['id','name','description','price','profile']);integer(patch.id,1,current.length-1,'武器 ID');const next=structuredClone(current),weapon=next[patch.id];if(!weapon)throw fail(404,'武器不存在');
       for(const key of ['name','description'])if(patch[key]!==undefined){string(patch[key],key==='name'?200:4000,key);weapon[key]=patch[key];}
       if(patch.price!==undefined){integer(patch.price,0,999999999,'价格');weapon.price=patch.price;}
-      if(patch.profile!==undefined){keys(patch.profile,['mode','skillId','toolId','range','maxDurability','durabilityCost','ammoItemId','ammoCost','mpCost']);const match=String(weapon.note||'').match(/<serverWeapon>([\s\S]*?)<\/serverWeapon>/i);const value=merge(match?JSON.parse(match[1]):{},patch.profile),note=`<serverWeapon>${JSON.stringify(value)}</serverWeapon>`;weapon.note=match?weapon.note.replace(match[0],note):`${weapon.note||''}\n${note}`;importWeaponProfiles({...this.content.database,Weapons:next});}return next;
+      if(patch.profile!==undefined){keys(patch.profile,['mode','skillId','toolId','range','maxDurability','durabilityCost','ammoItemId','ammoCost','mpCost','movementSpeed']);const match=String(weapon.note||'').match(/<serverWeapon>([\s\S]*?)<\/serverWeapon>/i);const value=merge(match?JSON.parse(match[1]):{},patch.profile),note=`<serverWeapon>${JSON.stringify(value)}</serverWeapon>`;weapon.note=match?weapon.note.replace(match[0],note):`${weapon.note||''}\n${note}`;importWeaponProfiles({...this.content.database,Weapons:next});}return next;
     }
     if(kind==='items'){
       keys(patch,['id','name','description','price']);integer(patch.id,1,current.length-1,'物品 ID');const next=structuredClone(current),item=next[patch.id];if(!item)throw fail(404,'物品不存在');

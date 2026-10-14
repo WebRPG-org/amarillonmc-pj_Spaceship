@@ -1,8 +1,10 @@
 import {World} from './world.mjs';
 import {addInventory} from './combat.mjs';
+import {equippedWeapon} from './weapons.mjs';
 import {MODERN_ROUND_MAPS, MODERN_ZONE_SCHEDULE, isModernRoundMap, decorateModernDistrict} from './modern-district.mjs';
 import {eventTags} from './event-tags.mjs';
 import {prepareRoundEvents} from './round-events.mjs';
+import {TutorialRuntime,TUTORIAL_ID} from './tutorial.mjs';
 
 export const ROUND_MAPS=[11,12,13,20,21,22,...MODERN_ROUND_MAPS];
 const distance=(a,b)=>Math.abs(a.x-b.x)+Math.abs(a.y-b.y);
@@ -42,20 +44,29 @@ export class Round {
     if(this.scenario.type==='dts')this.scenario.itemIds??=structuredClone(ensureGameContent(content).itemIds);
     Object.assign(this,{id,mode,ownerId,host,store,clock,durationSeconds});this.status='waiting';this.phase='waiting';this.members=new Map();this.createdAt=clock();this.startedAt=null;this.ordinaryExitUnlocked=false;this.ordinaryZonesDisabled=false;this.finalExitUnlocked=false;this.boss={spawned:false,dead:false,mapId:22};this.containers=new Map();this._queue=Promise.resolve();
     this.world=new World({content:roundContent(content,this.scenario),store:store.forRound(id),devTools:false,clock,random,retainDisconnected:true,hooks:{
-      onMapReady:map=>this.decorate(map),beforeTransfer:(player,mapId)=>{if(!this.scenario.mapIds.includes(mapId))throw new Error('请通过副本出口返回外部世界');},
+      onMapReady:map=>this.decorate(map),beforeTransfer:(player,mapId)=>{if(!this.scenario.mapIds.includes(mapId))throw new Error('请通过副本出口返回外部世界');this.tutorial?.beforeTransfer(player,mapId);},
       onService:(player,event)=>this.interact(player,event),snapshot:()=>this.snapshot(),
       onPlayerDeath:player=>{const m=this.members.get(player.id);if(m)m.result='dead';},
-      onEnemyDeath:enemy=>{if(enemy.isBoss){this.boss.dead=true;this.announce('封锁守卫已被击败，终局钥匙掉落在原地。带到终局出口结束本局。');}}
-    }});this.world.scenario=this.scenario;this.world.paused=true;
+      beforeHit:(...args)=>this.tutorial?.beforeHit(...args),
+      onPickupAttempt:(...args)=>this.tutorial?.onPickupAttempt(...args),onPickup:(...args)=>this.tutorial?.onPickup(...args),onCraft:(...args)=>this.tutorial?.onCraft(...args),onUseItem:(...args)=>this.tutorial?.onUseItem(...args),
+      onEnemyDeath:(enemy,owner,outcome)=>{this.tutorial?.onEnemyDeath(enemy,owner,outcome);if(enemy.isBoss){this.boss.dead=true;this.announce('封锁守卫已被击败，终局钥匙掉落在原地。带到终局出口结束本局。');}}
+    }});this.world.scenario=this.scenario;this.world.paused=true;if(this.scenario.id===TUTORIAL_ID)this.tutorial=new TutorialRuntime(this);
   }
   serialize(operation){const promise=this._queue.then(operation);this._queue=promise.catch(error=>{this.world.runtimeDiagnostics.set('round-operation',error.message);});return promise;}
-  snapshot(){return{id:this.id,definitionId:this.scenario.id,name:this.scenario.name,type:this.scenario.type,description:this.scenario.description,objectives:this.scenario.objectives,diskRecovered:this.diskRecovered||false,mode:this.mode,status:this.status,phase:this.phase,ownerId:this.ownerId,players:[...this.members.values()].map(m=>({id:m.id,name:m.name,connected:this.world.players.get(m.id)?._connected||false,dead:this.world.players.get(m.id)?.dead||m.result==='dead',result:m.result||null})),remainingSeconds:this.startedAt?Math.max(0,Math.ceil((this.startedAt+this.durationSeconds*1000-this.clock())/1000)):this.durationSeconds,ordinaryExitUnlocked:this.ordinaryExitUnlocked,ordinaryZonesDisabled:this.ordinaryZonesDisabled,finalExitUnlocked:this.finalExitUnlocked,boss:{...this.boss},keyItems:this.scenario.itemIds,result:this.result};}
+  snapshot(){return{id:this.id,definitionId:this.scenario.id,name:this.scenario.name,type:this.scenario.type,description:this.scenario.description,objectives:this.scenario.objectives,tutorial:this.tutorial?.snapshot()||null,diskRecovered:this.diskRecovered||false,mode:this.mode,status:this.status,phase:this.phase,ownerId:this.ownerId,players:[...this.members.values()].map(m=>({id:m.id,name:m.name,connected:this.world.players.get(m.id)?._connected||false,dead:this.world.players.get(m.id)?.dead||m.result==='dead',result:m.result||null})),remainingSeconds:this.startedAt?Math.max(0,Math.ceil((this.startedAt+this.durationSeconds*1000-this.clock())/1000)):this.durationSeconds,ordinaryExitUnlocked:this.ordinaryExitUnlocked,ordinaryZonesDisabled:this.ordinaryZonesDisabled,finalExitUnlocked:this.finalExitUnlocked,boss:{...this.boss},keyItems:this.scenario.itemIds,result:this.result};}
   announce(message){for(const p of this.world.players.values())this.world.notice(p,message);}
   seed(player){
     const initial=structuredClone(this.scenario.initialState||{level:1,gold:0,skills:[1],equips:{weapon:1,armor:0},inventory:[{kind:'weapon',itemId:1,quantity:1},{kind:'item',itemId:7,quantity:2},{kind:'item',itemId:38,quantity:1}]});
     const state=this.world.defaultState();Object.assign(state,initial,this.scenario.spawn||{mapId:11,x:22,y:24},{characterName:player.characterName,characterIndex:player.characterIndex,exp:0,paramPlus:[],switches:{},variables:{},selfSwitches:{},states:[],dead:false});
     const titleId=player.profile?.equippedTitle,title=this.world.content.gameplay?.titles?.[titleId];
-    if(title&&player.profile?.titles?.includes(titleId)&&this.scenario.allowedTitles?.includes(titleId)){addInventory(state,'weapon',title.weaponId,1);state.entryTitle=titleId;}
+    if(title&&!title.equipInWorld&&player.profile?.titles?.includes(titleId)&&this.scenario.allowedTitles?.includes(titleId)){addInventory(state,'weapon',title.weaponId,1);state.entryTitle=titleId;}
+    // Permanent weapon rewards use the real overworld equipment slot. Their
+    // unlock record is authorization, never a replacement for owning/equipping it.
+    if(this.scenario.type==='dts')for(const [id,unlock]of Object.entries(this.world.content.gameplay?.titles||{})){
+      if(!unlock.equipInWorld||!player.profile?.titles?.includes(id)||!this.scenario.allowedTitles?.includes(id)||equippedWeapon(player)?.itemId!==unlock.weaponId)continue;
+      if(!state.inventory.some(item=>item.kind==='weapon'&&item.itemId===unlock.weaponId))addInventory(state,'weapon',unlock.weaponId,1);
+      state.entryWeapon=unlock.weaponId;
+    }
     this.world.recalculate(state);state.hp=state.maxHp;state.mp=state.maxMp;return state;
   }
   async decorate(map){
@@ -71,6 +82,7 @@ export class Round {
           event.service={kind:'round',action:'container',containerId};this.containers.set(containerId,{items:structuredClone(items),opened:false});
         }
       }
+      this.tutorial?.decorate(map);
       return;
     }
     decorateModernDistrict(this,map);
@@ -98,12 +110,14 @@ export class Round {
     const startedAt=this.clock();await this.store.updateRound(this.id,{status:'active',metadata:{mode:this.mode,startedAt}});
     this.startedAt=startedAt;this.status='active';this.phase='exploration';this.world.hazards.nextWeather=startedAt+(this.scenario.meteor?.intervalMs||5000);this.world.paused=false;
     this.announce(this.scenario.type==='adventure'?this.scenario.description:'副本开始：旅店寻找通行证，道路寻找组件，村屋控制台可解除普通禁区并开启矿道挑战。道路接驳口通往现代城区，可搜刮补给并遭遇巡逻敌人。');
+    if(this.tutorial){this.phase='tutorial';for(const p of this.world.players.values())this.tutorial.hint(p);}
     for(const p of this.world.players.values())this.world.sendSnapshot(p);
   });}
   async interact(player,event){return this.serialize(async()=>{
     if(this.status!=='active')throw new Error('等待创建者开始副本');
     if(!this.world.players.has(player.id)||player.dead||player._dying||player.mapId!==event.mapId||distance(player,event)>1)throw new Error('请靠近目标操作');
     const action=event.service.action;
+    if(this.tutorial&&await this.tutorial.interact(player,event))return;
     if(action==='meteorDisk'){
       await this.world.enqueue(player,async()=>{
         const outcome=await this.world.store.claimContainer({playerId:player.id,containerId:'meteor-disk',mutator:state=>{addInventory(state,'item',this.scenario.diskItemId,1);return{disk:true};}});
@@ -117,7 +131,7 @@ export class Round {
     }
     if(action==='container'){
       const container=this.containers.get(event.service.containerId);if(!container||container.opened){this.world.notice(player,'容器已被搜刮');return;}
-      await this.world.enqueue(player,async()=>{const outcome=await this.world.store.claimContainer({playerId:player.id,containerId:event.service.containerId,mutator:state=>{for(const i of container.items)addInventory(state,i.kind,i.itemId,i.quantity);this.world.recalculate(state);return{container:event.service.containerId};}});if(outcome.claimed||String(outcome.claimedBy)===String(player.id))this.world.adoptEconomy(player,outcome.state);container.opened=true;event.name='已搜刮 · '+event.name;});
+      await this.world.enqueue(player,async()=>{const outcome=await this.world.store.claimContainer({playerId:player.id,containerId:event.service.containerId,mutator:state=>{for(const i of container.items)addInventory(state,i.kind,i.itemId,i.quantity);this.world.recalculate(state);return{container:event.service.containerId};}});if(outcome.claimed||String(outcome.claimedBy)===String(player.id))this.world.adoptEconomy(player,outcome.state);container.opened=true;event.name='已搜刮 · '+event.name;this.tutorial?.onContainer(player,event,outcome);});
       this.announce(`${player.name} 搜刮了 ${event.name.replace('已搜刮 · ','')}`);return;
     }
     if(action==='ordinaryExit'){
@@ -155,6 +169,6 @@ export class Round {
       const allDead=this.world.players.size>0&&[...this.world.players.values()].every(p=>p.dead&&!p._dying);
       if((elapsed>=this.durationSeconds*1000||allDead)&&!this._finishing){this._finishing=this.host.finishRound(this,{reason:allDead?'all-dead':'timeout',success:false}).catch(e=>{this._finishing=null;this.world.runtimeDiagnostics.set('round-finish',e.message);});return;}
     }
-    this.world.update(dt);
+    this.tutorial?.update();this.world.update(dt);
   }
 }

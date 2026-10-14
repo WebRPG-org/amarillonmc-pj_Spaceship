@@ -55,5 +55,9 @@ null,
 {"id":53,"expanded":false,"name":"流星废城 · 断街商业区","order":53,"parentId":52,"scrollX":811,"scrollY":448},
 {"id":54,"expanded":false,"name":"流星废城 · 中心广场","order":54,"parentId":52,"scrollX":811,"scrollY":448},
 {"id":55,"expanded":false,"name":"流星废城 · 临时避难所","order":55,"parentId":52,"scrollX":811,"scrollY":456},
-{"id":56,"expanded":false,"name":"流星废城 · 中心数据室","order":56,"parentId":52,"scrollX":811,"scrollY":536}
+{"id":56,"expanded":false,"name":"流星废城 · 中心数据室","order":56,"parentId":52,"scrollX":811,"scrollY":536},
+{"id":57,"expanded":true,"name":"ROSE 教室 · 机动水庭","order":57,"parentId":2,"scrollX":0,"scrollY":0},
+{"id":58,"expanded":false,"name":"ROSE 教室 · 六式武器馆","order":58,"parentId":57,"scrollX":0,"scrollY":0},
+{"id":59,"expanded":false,"name":"ROSE 教室 · 搜刮工坊","order":59,"parentId":57,"scrollX":0,"scrollY":0},
+{"id":60,"expanded":false,"name":"ROSE 教室 · 毕业演练庭","order":60,"parentId":57,"scrollX":0,"scrollY":0}
 ]

@@ -66,6 +66,18 @@ test('MySQL beta rewards, account profiles, environmental drops and records rema
       assert.equal((await store.loadRound(round.id)).status,'waiting');assert.equal((await store.loadProfile(b.id)).titles,undefined);
       await store.finishRound(round.id,{success:false});
     });
+    await t.test('ROSE first completion grants a real weapon once across concurrency, lost responses and later rounds',async()=>{
+      const rose=await store.register('rose_first_clear','beta-test-password');await store.savePlayer(rose.id,outside);
+      const reward={titleId:'red-kill-sword',firstCompletionOnly:true,items:[{kind:'weapon',itemId:66,quantity:1}]};
+      const result={success:true,reward,participants:[{id:rose.id,outcome:'completed'}]};
+      const first=await make(rose,'rose-orientation'),original=store.withConnectionTransaction.bind(store);let lose=true;
+      store.withConnectionTransaction=async action=>{const value=await original(action);if(lose){lose=false;throw new Error('lost ROSE reward response');}return value;};
+      try{await assert.rejects(store.finishRound(first.id,result),/lost ROSE/);}finally{store.withConnectionTransaction=original;}
+      const replay=await store.finishRound(first.id,result);assert.equal(replay.duplicate,true);assert.equal(replay.result.rewardsByPlayer[rose.id].newTitle,true);assert.equal(replay.result.rewardsByPlayer[rose.id].items[0].itemId,66);
+      const second=await make(rose,'rose-orientation');const results=await Promise.all([store.finishRound(second.id,result),store.finishRound(second.id,result)]);
+      assert.equal(results.filter(r=>r.duplicate).length,1);assert.equal(results[0].result.rewardsByPlayer[rose.id].newTitle,false);assert.deepEqual(results[0].result.rewardsByPlayer[rose.id].items,[]);
+      const state=(await store.loadPlayer(rose.id)).state;assert.equal(state.inventory.filter(i=>i.kind==='weapon'&&i.itemId===66).reduce((n,i)=>n+i.quantity,0),1);assert.equal(state.gold,outside.gold);assert.equal(state.level,outside.level);assert.deepEqual((await store.loadProfile(rose.id)).titles,['red-kill-sword']);
+    });
   }finally{
     await store.close();assert.match(database,/^spaceship_engine_test_beta_[0-9a-f]{12}$/);await admin.query(`DROP DATABASE IF EXISTS \`${database}\``);await admin.end();
   }

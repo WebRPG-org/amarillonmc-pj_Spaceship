@@ -16,6 +16,7 @@ export function bindPublicCityServices(map){
     const event=matches[0];map.events.delete(event.id);
     event.id=`service:${location.id}`;event.service={kind};map.events.set(event.id,event);
   }
+  if(map.id===41)for(const event of map.events.values())if(eventTags(event.raw||event).engine_service?.toLowerCase()==='tutorialentrance')event.service={kind:'tutorialEntrance'};
 }
 
 /** Migrate the retired starting room once; retain inventories and other saved locations. */

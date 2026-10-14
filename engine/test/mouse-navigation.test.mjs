@@ -60,6 +60,19 @@ test('mouse club swings use the authored rhombus area without taking an unnecess
   await f.world.command(f.p,{type:'navigate',x:3,y:6,targetId:target.id,requestId:'club-diagonal'});await f.advance(300);assert.ok(target.hp<target.maxHp);assert.deepEqual([f.p.x,f.p.y],origin,'diagonal neighbor is already in the club rhombus');
 });
 
+test('mouse red sword hits a diagonal tile without stepping, and sustained movement is 25 percent slower',async()=>{
+  const f=await fixture();await f.equip('cleave');const target=f.enemy(3,6),position=[f.p.x,f.p.y];
+  await f.world.command(f.p,{type:'navigate',targetId:target.id,x:target.x,y:target.y,requestId:'mouse-cleave'});await f.advance(50);
+  assert.deepEqual([f.p.x,f.p.y],position);assert.ok(target.hp<10000);assert.equal(f.p.direction,2);
+  const distance=[];
+  for(const equipped of [false,true]){
+    const trial=await fixture();if(equipped)await trial.equip('cleave');
+    await trial.world.command(trial.p,{type:'navigate',x:12,y:5});const initial=trial.p.x;
+    await trial.advance(1600);distance.push(trial.p.x-initial);
+  }
+  assert.deepEqual(distance,[8,6]);assert.equal(distance[1]/distance[0],.75);
+});
+
 test('mouse and keyboard interaction do not manually restart parallel event pages',async()=>{
   const f=await fixture(),automatic=f.event(44,3,5,{trigger:4,list:[{code:125,parameters:[0,0,99]},{code:0,parameters:[]}]});
   // Do not advance the world clock: the parallel scheduler has not run yet.

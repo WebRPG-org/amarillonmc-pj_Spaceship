@@ -26,8 +26,8 @@ test('Chrono tool import preserves real skills and projectile metadata',()=>{
   assert.equal(content.weaponTools.get(1),80);
   assert.ok(content.getTool(99).damage.formula);
   assert.equal(content.getTool(1).itemId,1);
-  assert.equal(content.coverage.summary.tools,76);
-  for(const id of [100,101,102,103])assert.ok(content.getTool(id));
+  assert.equal(content.coverage.summary.tools,77);
+  for(const id of [100,101,102,103,105])assert.ok(content.getTool(id));
 });
 
 test('imports recipe ingredients, unlock books and composition output',()=>{

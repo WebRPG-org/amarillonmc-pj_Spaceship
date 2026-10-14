@@ -268,8 +268,8 @@ function renderInventory() {
     const equipment = entry.kind === 'weapon' || entry.kind === 'armor';
     const equipped = self.equips?.[entry.kind] === entry.itemId && (entry.kind !== 'weapon' || !self.equips.weaponInstanceId || self.equips.weaponInstanceId === entry.instanceId);
     if (equipment || data?.consumable || data?.effects?.length) {
-      const button = node('button', '', equipment ? equipped ? '已装备' : '装备' : '使用'); button.disabled = equipped;
-      button.onclick = () => send(equipment ? { type: 'equip', kind: entry.kind, itemId: entry.itemId, ...(entry.instanceId ? {instanceId: entry.instanceId} : {}) } : { type: 'useItem', itemId: entry.itemId, requestId: requestId() }); row.append(button);
+      const button = node('button', equipped ? 'secondary' : '', equipment ? equipped ? '卸下' : '装备' : '使用');
+      button.onclick = () => send(equipment ? { type: 'equip', kind: entry.kind, itemId: equipped ? 0 : entry.itemId, ...(!equipped && entry.instanceId ? {instanceId: entry.instanceId} : {}) } : { type: 'useItem', itemId: entry.itemId, requestId: requestId() }); row.append(button);
     }
     const dropControls=node('div','inventory-drop-controls'),quantity=node('input'),dropButton=node('button','secondary','丢弃');
     quantity.type='number';quantity.min='1';quantity.max=String(entry.quantity);quantity.step='1';quantity.value='1';quantity.setAttribute('aria-label',`丢弃${data?.name||entry.kind}的数量`);
@@ -332,6 +332,7 @@ function renderTitles() {
   if(state.preview){root.append(node('p','empty-state','登录后可查看收藏与装备头衔。'));return;}
   root.append(node('p','',`饰品／头衔栏：${state.content.gameplay?.titles?.[profile.equippedTitle]?.name||'未装备'}`),node('p','hint',inRound?'本次出发效果已确定，回到主世界后可以更换头衔。':'装备后，在允许该头衔的下一次副本入场时获得对应效果。'));
   for(const [id,title]of Object.entries(state.content.gameplay?.titles||{})){
+    if(title.equipInWorld){const row=node('div','item-row'),description=node('div','item-description');description.append(node('strong','',title.name),node('p','',title.description),node('p','hint',profile.titles?.includes(id)?'已获得永久武器。回到主世界，在背包中装备这把武器，下一次 DTS 入场时携带。':'完成 ROSE 新手教学，首次通关获得永久武器。'));row.append(iconFor(itemData('weapon',title.weaponId)),description);root.append(row);continue;}
     const owned=profile.titles?.includes(id),equipped=profile.equippedTitle===id,row=node('div','item-row'),description=node('div','item-description'),button=node('button',equipped?'secondary':'',owned?equipped?'卸下':'装备':'尚未获得');
     description.append(node('strong','',title.name),node('p','',title.description));
     if(!owned&&id==='meteor')description.append(node('p','hint','完成「飞火流星 · 废城回收」，带着档案磁盘从入口撤离。'));
@@ -618,23 +619,27 @@ window.addEventListener('keydown', event => {
     else if ((event.code === 'Enter' || event.code === 'KeyE') && !event.repeat && !state.pendingDialogue.choices?.length) $('dialogue-choices').firstElementChild?.click();
     return;
   }
-  if (directions[event.code]) { event.preventDefault(); if(!event.repeat)cancelNavigation(); state.keys.delete(event.code); state.keys.add(event.code); if(!event.repeat)moveFromKeyboard(); }
+  if (directions[event.code]) { event.preventDefault(); if(!event.repeat)cancelNavigation(); state.keys.delete(event.code); state.keys.add(event.code); if(!event.repeat)moveFromKeyboard(true); }
   if ((event.code === 'KeyJ' || event.code === 'Space') && !event.repeat) { event.preventDefault(); attack(); }
   if (event.code === 'KeyE' && !event.repeat) { event.preventDefault(); interact(); }
 });
 window.addEventListener('keyup', event => state.keys.delete(event.code));
 window.addEventListener('blur', () => {state.keys.clear(); cancelNavigation();});
 document.addEventListener('visibilitychange', () => {state.keys.clear(); if(document.hidden)cancelNavigation();});
-function moveFromKeyboard() {
+let nextKeyboardMoveAt=0;
+function moveFromKeyboard(forceFacing=false) {
   if (state.panel || state.pendingDialogue || !$('welcome').hidden) return;
   const key = [...state.keys].at(-1), inputDirection = directions[key]; if (!inputDirection) return;
+  const now=performance.now();if(!forceFacing&&now<nextKeyboardMoveAt)return;
+  const speed=Number(state.snapshot?.self?.movementSpeed)||1;
+  nextKeyboardMoveAt=now+150/speed;
   const direction=renderer.threeD.inputDirection(inputDirection);
   if (state.preview) {
     renderer.pan(direction === 6 ? .6 : direction === 4 ? -.6 : 0, direction === 2 ? .6 : direction === 8 ? -.6 : 0);
     $('coordinates').textContent = `预览 X ${Math.round(renderer.viewCenter?.x || 0)} · Y ${Math.round(renderer.viewCenter?.y || 0)}`;
   } else if (state.ready && state.socket?.readyState === WebSocket.OPEN && !me()?.dead) send({ type: 'move', direction, seq: ++state.seq });
 }
-setInterval(moveFromKeyboard, 150);
+setInterval(moveFromKeyboard, 25);
 
 async function initialize() {
   try {
@@ -673,9 +678,10 @@ async function renderAppearance() {
 }
 function receiveService(message) {
   if (message.service === 'appearance') openPanel('appearance');
+  else if (message.service === 'craft') openPanel('craft');
   else if (message.service === 'instance') { state.instanceService = message; openPanel('instance'); }
 }
-const phaseNames = { waiting:'准备出发',exploration:'探索与寻物',return:'磁盘已取得 · 返回入口',boss:'禁区推进 · Boss阶段',completed:'本局已结束' };
+const phaseNames = { waiting:'准备出发',tutorial:'ROSE 的生存课堂',exploration:'探索与寻物',return:'磁盘已取得 · 返回入口',boss:'禁区推进 · Boss阶段',completed:'本局已结束' };
 const modeName = mode => mode === 'pvpve' ? 'PvPvE · 竞争生存' : 'PvE · 合作探索';
 const countdown = seconds => Number.isFinite(seconds) ? `${String(Math.floor(Math.max(0,seconds)/60)).padStart(2,'0')}:${String(Math.floor(Math.max(0,seconds)%60)).padStart(2,'0')}` : '--:--';
 function keyCount(id) { return (state.snapshot?.self?.inventory || []).filter(i => i.kind === 'item' && i.itemId === id).reduce((n,i) => n+i.quantity,0); }
@@ -689,8 +695,9 @@ function updateInstanceHud() {
   $('instance-countdown').textContent = countdown(instance.remainingSeconds);
   $('instance-objective').textContent = instance.finalExitUnlocked ? '终局出口已开启，请按提示撤离。' : instance.boss?.dead ? 'Boss已击败，寻找终局钥匙并前往终局出口。' : instance.boss?.spawned ? `Boss已出现 · 地图 ${instance.boss.mapId}。留意当前地图禁区。` : instance.ordinaryExitUnlocked ? '普通出口已解锁，可继续探索或个人撤离。' : '探索资源、寻找钥匙，面向箱子与装置按 E。';
   if(instance.type==='adventure'){$('instance-mode').textContent='单人冒险';$('instance-objective').textContent=instance.diskRecovered?'磁盘已回收，返回城郊撤离信标。':'穿过街区，前往市中心档案楼取回磁盘。户外红色预警出现后立即移开。';}
+  if(instance.tutorial){$('instance-mode').textContent='单人教学';$('instance-objective').textContent=`${instance.tutorial.index+1}/${instance.tutorial.total} · ${instance.tutorial.label}`;}
   const timer = document.getElementById('instance-panel-clock'); if(timer) timer.textContent = countdown(instance.remainingSeconds);
-  const signature = JSON.stringify([instance.id,instance.mode,instance.status,instance.phase,instance.players,instance.boss,instance.ordinaryExitUnlocked,instance.finalExitUnlocked,instance.ordinaryZonesDisabled,instanceKeys(instance)]);
+  const signature = JSON.stringify([instance.id,instance.mode,instance.status,instance.phase,instance.players,instance.boss,instance.ordinaryExitUnlocked,instance.finalExitUnlocked,instance.ordinaryZonesDisabled,instanceKeys(instance),instance.tutorial?.step]);
   if (state.instanceSignature !== signature) {state.instanceSignature=signature;if(state.panel==='instance')renderInstance();}
 }
 function statusCard(label,value) { const card=node('div','instance-stat'); card.append(node('span','',label),node('strong','',String(value))); return card; }
@@ -701,6 +708,7 @@ function renderInstance() {
     const stats=node('div','instance-stats'),time=statusCard('本局剩余时间',countdown(instance.remainingSeconds));time.querySelector('strong').id='instance-panel-clock';stats.append(statusCard('当前阶段',phaseNames[instance.phase]||instance.status),time);root.append(stats);
     const keys=instanceKeys(instance),keyRow=node('div','instance-stats');keyRow.append(statusCard('普通出口钥匙',keys.ordinary),statusCard('控制装置钥匙',keys.control),statusCard('终局出口钥匙',keys.final));if(instance.type!=='adventure')root.append(keyRow);
     const objectives=node('ol','instance-objectives');
+    if(instance.tutorial)root.append(node('h3','',`当前课程 ${instance.tutorial.index+1}/${instance.tutorial.total}：${instance.tutorial.label}`),node('p','',`ROSE：${instance.tutorial.hint}`),node('p','hint','靠近 ROSE 按 E 可重听提示并免费补给。死亡或退出后，可在广场重新开始；练习物品不会带出。'));
     for (const text of (instance.type==='adventure'?(instance.objectives||[]):[
       `普通出口：${instance.ordinaryExitUnlocked?'已解锁，可交互撤离':'寻找钥匙，前往普通出口解锁'}`,
       `普通禁区：${instance.ordinaryZonesDisabled?'已解除':'收集控制钥匙，与解除装置交互'}`,
@@ -730,10 +738,10 @@ function renderInstanceResult() {
   const result=state.instanceResult||{},root=$('panel-content');root.replaceChildren();
   const outcomes={escaped:'成功撤离',victory:'行动成功',completed:'行动完成',cleared:'完成终局',dead:'行动中倒下',death:'行动中倒下',defeated:'行动失败',abandoned:'主动离开',left:'已离开副本',timeout:'行动时间结束',failed:'行动结束'};
   root.append(node('div',`result-title ${['dead','death','defeated','failed'].includes(result.outcome)?'danger-text':''}`,outcomes[result.outcome]||result.outcome||'本局已结算'));
-  if(result.reason){const reasonNames={'disk-extracted':'磁盘已安全送回，废城回收完成。','final-exit':'终局出口已开启，本局结束。','boss-exit':'封锁守卫被击败，终局出口已开启。','timeout':'行动时间耗尽。','server-shutdown':'服务器维护，本局已结算。','server-restarted':'服务器重启，本局已中止。','all-left':'所有玩家已离开本局。',escaped:'你通过普通出口安全撤离。',left:'你已主动退出本局。',dead:'角色死亡，本次行动结束。'};root.append(node('p','',reasonNames[result.reason]||result.reason));}
+  if(result.reason){const reasonNames={'tutorial-completed':'ROSE 的生存课堂毕业！首通获得的红杀铁剑可在主世界背包中装备。','disk-extracted':'磁盘已安全送回，废城回收完成。','final-exit':'终局出口已开启，本局结束。','boss-exit':'封锁守卫被击败，终局出口已开启。','timeout':'行动时间耗尽。','server-shutdown':'服务器维护，本局已结算。','server-restarted':'服务器重启，本局已中止。','all-left':'所有玩家已离开本局。','all-dead':'角色倒下，行动结束。新手教学可回广场找 ROSE 免费重试。',escaped:'你通过普通出口安全撤离。',left:'你已主动退出本局。',dead:'角色死亡，本次行动结束。'};root.append(node('p','',reasonNames[result.reason]||result.reason));}
   root.append(node('p','hint',`副本 ${result.instanceId||''} · 物品与结果以服务器结算为准。`));
   if(result.durationSeconds!=null)root.append(node('p','',`行动时长 ${countdown(result.durationSeconds)}`));
-  if(result.rewards?.titleId){const title=state.content.gameplay?.titles?.[result.rewards.titleId];root.append(node('h3','',`${result.rewards.newTitle?'获得永久头衔':'已拥有头衔'}：${title?.name||result.rewards.titleId}`),node('p','',title?.description||''),node('p','hint','回到主世界后，点击「饰品／头衔」装备。'));}
+  if(result.rewards?.titleId){const title=state.content.gameplay?.titles?.[result.rewards.titleId],kind=title?.equipInWorld?'永久武器':'头衔';root.append(node('h3','',`${result.rewards.newTitle?'获得':'已获得'}${kind}：${title?.name||result.rewards.titleId}`),node('p','',title?.description||''),node('p','hint',title?.equipInWorld?'回到主世界后，打开背包装备红杀铁剑；下一次进入 DTS 会携带同名武器。重复通关不重复发放。':'回到主世界后，点击「饰品／头衔」装备。'));}
   if(result.rewards?.gold)root.append(node('p','',`获得主世界金币 ${result.rewards.gold}`));
   const back=node('button','','返回世界');back.onclick=()=>{if(state.snapshot?.instance)send({type:'instance',action:'leave'});closePanel();};root.append(back);
 }

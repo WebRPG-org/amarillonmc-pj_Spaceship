@@ -6,9 +6,19 @@
       "description": "合作或竞争搜刮，寻找通行证撤离，或解除封锁挑战守卫。局内物资与金钱不带出。",
       "mapIds": [11,12,13,20,21,22,31,32,33,34,35,36,37,38,39],
       "outdoorMapIds": [11,20], "spawn": {"mapId":11,"x":18,"y":22},
-      "durationSeconds": 1200, "maxPlayers": 8, "allowedTitles": ["meteor"],
+      "durationSeconds": 1200, "maxPlayers": 8, "allowedTitles": ["meteor","red-kill-sword"],
       "initialState": {"level":1,"classId":1,"gold":0,"skills":[1],"equips":{"weapon":0,"armor":121},"inventory":[{"kind":"armor","itemId":121,"quantity":1},{"kind":"item","itemId":102,"quantity":2},{"kind":"item","itemId":103,"quantity":2},{"kind":"item","itemId":38,"quantity":1}]},
       "meteorWeapon": {"delayMs":10000,"mpMultiplier":8}
+    },
+    "rose-orientation": {
+      "id":"rose-orientation", "name":"ROSE 的生存课堂", "type":"adventure",
+      "description":"与明快的女高中生 ROSE 一起练习移动、六种武器攻击、击败 NPC、拾取、搜刮、合成和恢复。单人课堂，提示不暂停操作；靠近 ROSE 按 E 免费补给。首通解锁红杀铁剑。",
+      "mapIds":[57,58,59,60], "outdoorMapIds":[57,60], "spawn":{"mapId":57,"x":4,"y":19,"direction":8},
+      "durationSeconds":2400, "maxPlayers":1, "allowedTitles":[],
+      "initialState":{"level":1,"classId":1,"gold":0,"skills":[1],"equips":{"weapon":0,"armor":121},"inventory":[{"kind":"armor","itemId":121,"quantity":1},{"kind":"weapon","itemId":66,"quantity":1},{"kind":"weapon","itemId":61,"quantity":1},{"kind":"weapon","itemId":62,"quantity":1},{"kind":"weapon","itemId":63,"quantity":1},{"kind":"weapon","itemId":64,"quantity":1},{"kind":"item","itemId":101,"quantity":30},{"kind":"item","itemId":102,"quantity":5},{"kind":"item","itemId":103,"quantity":3},{"kind":"item","itemId":14,"quantity":3}]},
+      "containerLoot":{"tutorial-supplies":[{"kind":"item","itemId":38,"quantity":1},{"kind":"item","itemId":47,"quantity":3},{"kind":"item","itemId":48,"quantity":3},{"kind":"item","itemId":102,"quantity":3},{"kind":"item","itemId":103,"quantity":3}]},
+      "reward":{"titleId":"red-kill-sword","firstCompletionOnly":true,"items":[{"kind":"weapon","itemId":66,"quantity":1}]},
+      "objectives":["机动障碍场：依次通过 A、B、C 三个检查点","武器馆：空手、劈斩、投掷、钝击、射击、法术六项练习，拾取掉落","搜刮工坊：开箱、合成并使用咖喱面包","毕业演练场：击败所有对手，与毕业出口交互"]
     },
     "meteor-recovery": {
       "id": "meteor-recovery", "name": "飞火流星 · 废城回收", "type": "adventure",
@@ -24,6 +34,7 @@
     }
   },
   "titles": {
+    "red-kill-sword":{"id":"red-kill-sword","name":"红杀铁剑","weaponId":66,"equipInWorld":true,"description":"ROSE 生存课堂首通发放到主世界背包的永久武器。在主世界背包装备红杀铁剑后，进入支持该效果的 DTS 时获得对应武器。持剑移动速度降低25%；普通攻击对面前紧邻横排三格发动强力劈斩。课堂借用品不会带出，重复毕业不会重复发放永久武器。"},
     "meteor": {"id":"meteor","name":"飞火流星","weaponId":65,"description":"在支持此头衔的副本中，出生携带武器「飞火流星」。户外使用消耗全部MP，引导10秒后以本人当时位置为中心砸下陨石，伤害为消耗MP的8倍，敌我不分且命中自己。引导中死亡或进入室内取消，MP不返还。"}
   },
   "shops": {
@@ -31,6 +42,8 @@
     "dts-supply": {"name":"远征补给商人","scope":"dts","mapId":11,"buyOnly":false,"sellRate":0.5,"goods":[{"kind":"item","itemId":102,"price":10},{"kind":"item","itemId":103,"price":10},{"kind":"item","itemId":101,"price":3},{"kind":"weapon","itemId":61,"price":35},{"kind":"weapon","itemId":62,"price":50}]}
   },
   "npcs": {
+    "tutorial-dummy":{"name":"训练靶","hp":1,"mp":0,"stats":{"atk":0,"def":0,"mat":0,"mdf":0,"agi":0,"luk":0},"gold":0,"exp":0,"respawnMs":0,"drops":[]},
+    "tutorial-final":{"name":"毕业演练对手","hp":180,"mp":0,"stats":{"atk":12,"def":5,"mat":8,"mdf":5,"agi":8,"luk":0},"gold":8,"exp":5,"respawnMs":0,"drops":[{"kind":"item","itemId":102,"quantity":1,"chance":1}]},
     "scavenger": {"name":"瓦砾拾荒者","hp":110,"mp":0,"stats":{"atk":20,"def":8,"mat":10,"mdf":8,"agi":12,"luk":10},"gold":12,"exp":10,"drops":[{"kind":"item","itemId":102,"quantity":1,"chance":1},{"kind":"item","itemId":103,"quantity":1,"chance":0.4}]},
     "guard": {"name":"失控巡逻机","hp":180,"mp":0,"stats":{"atk":28,"def":12,"mat":15,"mdf":12,"agi":10,"luk":10},"gold":25,"exp":20,"drops":[{"kind":"item","itemId":101,"quantity":6,"chance":1},{"kind":"item","itemId":14,"quantity":1,"chance":0.3}]}
   },

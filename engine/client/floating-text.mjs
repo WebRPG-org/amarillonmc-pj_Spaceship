@@ -97,8 +97,10 @@ export class FloatingTextLayer {
     this.gabController?.destroy(); this.gabController = null; this.gab.hidden = true; this.gabMessage = null;
     if (message.action === 'clear') return;
     this.gabMessage = message; this.gabStart = performance.now(); this.gab.hidden = false;
-    this.gab.style.top = `${Math.max(0, message.y ?? 72)}px`; this.gab.style.opacity = '1';
-    this.gabController = this.text(this.gabText, message.text, message.textContext, {fontSize:message.fontSize || 28, fontFace:message.fontName || this.defaults().fontFace});
+    this.gab.dataset.compact = String(message.compact === true);
+    this.gab.style.top = message.compact ? 'auto' : `${Math.max(0, message.y ?? 72)}px`;
+    this.gab.style.bottom = message.compact ? '42px' : ''; this.gab.style.opacity = '1';
+    this.gabController = this.text(this.gabText, message.text, message.textContext, {fontSize:message.compact ? 18 : message.fontSize || 28, fontFace:message.fontName || this.defaults().fontFace});
     this.portrait.hidden = !message.graphicName && !message.appearance;
     if (message.soundName) this.sound('se', {name:message.soundName, volume:90, pitch:100});
   }

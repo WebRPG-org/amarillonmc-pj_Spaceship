@@ -1,0 +1,35 @@
+{
+  "character": "ROSE",
+  "reference": "用户提供：教学用【ROSE】.zip / 10_01.png",
+  "generator": "built-in image_gen",
+  "files": [
+    {
+      "path": "img/characters/$ROSE.png",
+      "width": 144,
+      "height": 192,
+      "layout": "3 columns × 4 rows; down, left, right, up; left step, stand, right step",
+      "packaging": "Nearest-neighbor resampling of generated 1086×1448 transparent sheet."
+    },
+    {
+      "path": "img/faces/ROSE.png",
+      "width": 576,
+      "height": 288,
+      "layout": "4 columns × 2 rows; 144×144 portraits",
+      "expressions": [
+        "欢迎微笑",
+        "明快讲解",
+        "认真鼓励",
+        "俏皮眨眼",
+        "开怀大笑",
+        "温柔安慰",
+        "惊讶",
+        "毕业赞许"
+      ],
+      "packaging": "Eight equal generated cells resampled individually with alpha preserved."
+    }
+  ],
+  "prompts": {
+    "sprite": "Use case: stylized-concept. Asset type: production RPG Maker MV single-character walking sprite sheet for NPC ROSE. Input image is the character identity reference, not an edit target. Generate an exact aligned 3 columns by 4 rows sprite sheet, 12 isolated equal-size full-body pixel-art chibi figures on actual transparent background. Rows top to bottom: facing down/front, facing left, facing right, facing up/back. Columns: left-foot walking, standing neutral, right-foot walking. All feet share consistent baseline within each equal cell. Orthographic top-down RPG Maker 48px-tile game viewpoint, 2.5-heads-tall pixel chibi, crisp pixel edges, restrained pixel shading. Preserve the reference: long vivid reddish hair with single cowlick, rose-pink eyes, oversized crimson hoodie with ivory smiling face on front, dark green-black cuffs and hem, dark short shorts discreetly visible under hem, dark knee-high boots with magenta accents and red soles. Cheerful high school girl, modest everyday outfit. Back row must show back of long red hair and plain back of hoodie; no face on back. Left and right rows are real side-facing profiles. No sword, no props, no text, no grid lines, no floor shadow. Occupy matching proportional cell boxes, no cropped body parts or overlap. Output canvas 768x1024 if possible, cells 256x256, generous transparent gutters within each cell; artwork bounded to center 180x224 per cell. This is a spritesheet to mechanically resize to 144x192, so exact spacing and consistent scale are essential.",
+    "face": "Use case: stylized-concept. Asset type: RPG Maker MV face portrait sheet, 4 columns x 2 rows, eight expressions of exactly the same cheerful high school girl NPC named ROSE. Reference image supplies identity and clothing, not an edit target. Create a clean professionally painted anime face sheet on actual transparent background. Equal square cells with each head centered at identical size and eye line, close head-and-shoulders framing, complete cowlick and hair visible with small margin; shoulders fill bottom of each cell without spilling. Row 1 expressions left to right: 0 warm welcoming smile, 1 bright open-mouth explanation, 2 focused determined encouragement, 3 playful wink. Row 2: 4 cheerful eyes-closed laugh, 5 concerned gentle reassurance, 6 surprised realization, 7 proud graduation smile. Preserve vivid red hair, long side locks, distinctive cowlick, large dusty rose-pink eyes, crimson hoodie and dark green-black inner collar from reference. Age-appropriate friendly everyday depiction. Consistent clean line art, polished soft cel shading matching the reference. No props, no labels, no text, no frames, no grid lines, no extra characters. Output 1536x768 (eight 384px square cells) if possible; this will be mechanically scaled to 576x288, so precise equal 4x2 alignment is essential."
+  }
+}

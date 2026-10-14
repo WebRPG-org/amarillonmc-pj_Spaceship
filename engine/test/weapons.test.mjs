@@ -4,9 +4,10 @@ import {fileURLToPath} from 'node:url';
 import {randomUUID} from 'node:crypto';
 import {loadContent} from '../server/content.mjs';
 import {World} from '../server/world.mjs';
-import {normalizeWeapons,equippedWeapon} from '../server/weapons.mjs';
+import {normalizeWeapons,equippedWeapon,cleaveTiles,weaponMovementSpeed,importWeaponProfiles} from '../server/weapons.mjs';
 import {addInventory} from '../server/combat.mjs';
 import {MySqlStore} from '../server/persistence.mjs';
+import {Round} from '../server/rounds.mjs';
 
 const clone=structuredClone;
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
@@ -47,8 +48,8 @@ async function fixture(){
 }
 
 test('four authored weapon profiles import their appended Toolmap attacks and MZ animations',async()=>{
-  const f=await fixture();assert.equal(f.content.weaponProfiles.size,4);
-  for(const [index,p]of [...f.content.weaponProfiles.values()].entries()){
+  const f=await fixture();assert.equal(f.content.weaponProfiles.size,5);
+  for(const [index,p]of [...f.content.weaponProfiles.values()].filter(p=>p.mode!=='cleave').entries()){
     const tool=f.content.getTool(p.toolId);assert.equal(tool.skillId,p.skillId);assert.equal(tool.mapId,25);assert.equal(tool.projectile,p.projectile);assert.equal(tool.animationId,121+index);
     assert.equal(f.content.getToolForSkill(p.skillId),tool);assert.ok(f.content.database.Animations[121+index].effectName);
   }
@@ -96,6 +97,81 @@ test('server projectile motion stops at walls and configured range; club hits mu
   await f.world.attack(f.player,1,'wall');const attack=[...f.world.maps.get(1).projectiles.values()][0];f.world.advanceProjectile(attack,2);assert.equal(blocked.hp,10000);assert.equal(attack.expires,0);
   f.content.isPassable=()=>true;f.world.maps.get(1).events.delete(blocked.id);f.advance();await f.world.attack(f.player,1,'range');const ranged=[...f.world.maps.get(1).projectiles.values()].at(-1);f.world.advanceProjectile(ranged,2);assert.equal(far.hp,10000);assert.ok(Math.abs(ranged.distance-6)<1e-8);
   await f.equip('club');f.advance();const close=f.enemy(3),side=f.enemy(1,3),outside=f.enemy(4);await f.world.attack(f.player,1,'club');assert.ok(close.hp<10000);assert.ok(side.hp<10000);assert.equal(outside.hp,10000);
+});
+
+test('red iron sword cleaves exactly three front tiles in all directions, once each, with authored effects',async()=>{
+  const f=await fixture();await f.equip('cleave');const {world,player,content}=f,tool=content.getTool(105),skill=content.database.Skills[306];
+  assert.equal(tool.skillId,306);assert.equal(tool.area,'wall');assert.equal(tool.projectile,false);assert.equal(tool.cooldown,.8);
+  assert.equal(skill.animationId,125);assert.ok(content.database.Animations[125].frames.length);assert.equal(content.database.Animations[125].animation1Name,'SlashFire');
+  for(const direction of [2,4,6,8]){
+    f.advance();player.x=10;player.y=10;player.direction=direction;world.maps.get(1).events.clear();world.maps.get(1).projectiles.clear();
+    const expected=new Set(cleaveTiles(player).map(p=>`${p.x},${p.y}`)),targets=[];
+    for(let dx=-2;dx<=2;dx++)for(let dy=-2;dy<=2;dy++)if(dx||dy)targets.push(f.enemy(player.x+dx,player.y+dy));
+    const messages=[];player._send=m=>messages.push(m);
+    assert.equal(await world.attack(player,1,`cleave-${direction}`),true);
+    const attack=[...world.maps.get(1).projectiles.values()][0],hpAfter=targets.map(t=>t.hp);world.resolveAttack(attack);
+    assert.deepEqual(targets.map(t=>t.hp),hpAfter,'one swing cannot hit the same target twice');
+    for(const target of targets)assert.equal(target.hp<10000,expected.has(`${target.x},${target.y}`),`direction ${direction} target ${target.x},${target.y}`);
+    assert.equal(attack.hit.size,3);assert.equal(attack.projectile,false);
+    const effects=messages.filter(m=>m.type==='effect'&&m.kind==='attack');assert.equal(effects.length,3);assert.ok(effects.every(e=>e.animationId===125));
+    assert.deepEqual(new Set(effects.map(e=>`${e.x},${e.y}`)),expected);
+    assert.ok(targets.filter(t=>t.hp<10000).every(t=>10000-t.hp>=player.stats.atk*3),'powerful physical damage');
+  }
+});
+
+test('red sword respects walls, exact equipment, attack cost idempotency and the 25 percent speed penalty',async()=>{
+  const f=await fixture(),{world,player,content}=f;const weapon=await f.equip('cleave');
+  assert.equal(weaponMovementSpeed(content,player),.75);assert.equal(world.movementInterval(player),140/.75);assert.equal(world.snapshot(player).self.movementSpeed,.75);
+  const start=world.now;player._lastMove=start;world.now=start+140;world.move(player,6);assert.equal(player.x,1);
+  world.now=start+186;world.move(player,6);assert.equal(player.x,1);
+  world.now=start+187;world.move(player,6);assert.equal(player.x,2);
+  await world.equip(player,'weapon',0);assert.equal(world.movementInterval(player),140);world.now+=140;world.move(player,6);assert.equal(player.x,3);
+  await assert.rejects(world.attack(player,306,'wrong-weapon'),/对应武器/);
+  await world.equip(player,'weapon',66,weapon.instanceId);player.x=1;player.y=5;player.direction=6;f.advance();
+  const center=f.enemy(2),side=f.enemy(2,6);content.isPassable=(_map,x,_y,d)=>!(x===1&&d===6);
+  assert.equal(await world.attack(player,1,'blocked-cleave'),true);assert.equal(center.hp,10000);assert.equal(side.hp,10000);
+  f.advance();assert.equal(await world.attack(player,1,'blocked-cleave'),false);assert.equal(equippedWeapon(player).durability,undefined);
+  await world.inventoryAction(player,{action:'drop',kind:'weapon',itemId:66,instanceId:weapon.instanceId,quantity:1,requestId:'drop-heavy-sword'});
+  assert.equal(world.snapshot(player).self.movementSpeed,1);assert.equal(player.equips.weapon,0);
+});
+
+test('weapon authoring rejects invalid movement multipliers and cleave ranges',async()=>{
+  const {content}=await fixture(),original=content.database.Weapons[66];
+  for(const patch of [{movementSpeed:0},{movementSpeed:-.1},{movementSpeed:1.1},{movementSpeed:'bad'},{range:2}]){
+    const database={...content.database,Weapons:[...content.database.Weapons]},value={...content.weaponProfiles.get(66),...patch};
+    database.Weapons[66]={...original,note:`<serverWeapon>${JSON.stringify(value)}</serverWeapon>`};
+    assert.throws(()=>importWeaponProfiles(database),/Invalid weapon 66/);
+  }
+});
+
+test('offline navigation preserves the same 25 percent equipped movement penalty',async()=>{
+  const distances=[];
+  for(const equipped of [false,true]){
+    const f=await fixture(),{world,player}=f;if(equipped)await f.equip('cleave');
+    player._connected=false;player.offlineBehavior='search';
+    const drop={id:'distant-loot',kind:'item',itemId:7,quantity:1,mapId:1,x:22,y:5};world.maps.get(1).drops.set(drop.id,drop);
+    world.offlineAI.update(player);const initial=player.x;
+    for(let step=0;step<32;step++){world.now+=50;world.offlineAI.update(player);}
+    distances.push(player.x-initial);
+  }
+  assert.deepEqual(distances,[8,6]);assert.equal(distances[1]/distances[0],.75);
+});
+
+test('DTS entry carries the red sword only after unlock and real overworld equipment, never a title shortcut',async()=>{
+  const f=await fixture();await f.equip('cleave');const {player,content}=f;
+  content.gameplay.titles['red-kill-sword']={id:'red-kill-sword',name:'红杀铁剑',weaponId:66,equipInWorld:true};
+  const scenario={id:'entry-check',name:'装备检查',type:'dts',mapIds:[1],spawn:{mapId:1,x:1,y:5},allowedTitles:['red-kill-sword'],initialState:{inventory:[],skills:[1],equips:{weapon:0,armor:0}}};
+  const seed=(state,patch={})=>new Round({id:'entry-check',content,store:{forRound:()=>f.store},host:{},scenario:{...scenario,...patch}}).seed(state);
+  const count=state=>state.inventory.filter(i=>i.kind==='weapon'&&i.itemId===66).length;
+  player.profile={titles:['red-kill-sword']};
+  const initial=seed(player);assert.equal(count(initial),1);assert.equal(initial.entryWeapon,66);assert.notEqual(initial.inventory.find(i=>i.itemId===66).instanceId,player.equips.weaponInstanceId);
+  assert.equal(count(seed({...player,profile:{titles:[]}})),0,'locked reward cannot be carried');
+  assert.equal(count(seed({...player,equips:{weapon:0},profile:{titles:['red-kill-sword'],equippedTitle:'red-kill-sword'}})),0,'title selection cannot substitute for actual equipment');
+  assert.equal(count(seed({...player,equips:{...player.equips,weaponInstanceId:'forged'}})),0,'missing equipped instance');
+  assert.equal(count(seed({...player,inventory:[]})),0,'unowned equipment');
+  assert.equal(count(seed(player,{allowedTitles:[]})),0,'scenario does not permit this reward');
+  assert.equal(count(seed(player,{type:'adventure'})),0,'only DTS entry copies this weapon');
+  assert.equal(count(seed(player,{initialState:{...scenario.initialState,inventory:[{kind:'weapon',itemId:66,quantity:1}]}})),1,'configured starting item is not duplicated');
 });
 
 test('a failed payment emits no attack and death during an in-flight payment cannot fire or reset spent durability',async()=>{

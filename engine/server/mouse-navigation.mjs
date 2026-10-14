@@ -40,6 +40,10 @@ export class MouseNavigation {
     const range=Math.max(1,Math.min(10,(skillId===1?this.world.content.weaponProfiles?.get(player.equips.weapon)?.range:0)||tool?.range||1));
     const deltaX=Math.abs(target.x-player.x),deltaY=Math.abs(target.y-player.y);
     if(deltaX===0&&deltaY===0)return false;
+    const profile=this.world.content.weaponProfiles?.get(player.equips.weapon);
+    if(profile?.mode==='cleave'&&(skillId===1||skillId===profile.skillId)){
+      return Math.max(deltaX,deltaY)===1&&this.world.attackLineClear(player.mapId,player.x,player.y,target.x,target.y);
+    }
     // Area melee (including the authored club rhombus) does not need axis alignment.
     if(tool&&!tool.projectile&&!/front|wall|line/.test(tool.area||'')){
       const inArea=(tool.area||'').includes('square')?Math.max(deltaX,deltaY)<=range:deltaX+deltaY<=range;
@@ -62,7 +66,7 @@ export class MouseNavigation {
   update(player){
     const plan=this.plans.get(player.id);if(!plan)return;
     if(!player._connected||player.dead||player._dying||player._transferring||player.mapId!==plan.mapId||this.world.paused){this.cancel(player);return;}
-    if(plan.pending||player._economyBusy||player._economyUncertain||this.world.now<plan.nextAt)return;
+    if(plan.pending||player._economyBusy||player._economyUncertain||this.world.now+1e-6<plan.nextAt)return;
     const target=this.resolve(player,plan);if(!target){this.cancel(player);return;}
     const ready=target.action==='attack'?this.attackReady(player,target.entity,plan.skillId):distance(player,target.entity)<=target.range;
     if(ready){
@@ -74,7 +78,8 @@ export class MouseNavigation {
         return this.world.interact(player,target.entity.id);
       }).catch(error=>this.world.notice(player,error.message));return;
     }
-    plan.nextAt=this.world.now+160;
+    const interval=this.world.movementInterval(player,200);
+    plan.nextAt=Math.max(plan.nextAt||this.world.now,this.world.now-interval)+interval;
     if(!plan.path.length||this.world.now>=plan.nextPlan){
       plan.nextPlan=this.world.now+600;plan.path=target.action==='attack'?this.attackPath(player,target.entity,plan.skillId):findPath(this.world,player,{x:target.entity.x,y:target.entity.y,range:target.range,allowBlockedGoal:target.portal,maxNodes:4096});
       if(!plan.path){this.cancel(player);this.world.notice(player,'无法走到目标附近');return;}

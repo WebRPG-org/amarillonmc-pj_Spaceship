@@ -38,8 +38,9 @@ export class OfflineAI {
     if(player._connected||player.dead||player._dying||player._transferring||world.paused){this.cancel(player);return;}
     if(behavior==='stay'){this.cancel(player);player.offlineActivity='原地停留';return;}
     const state=this.state(player);
-    if(player._disconnecting||player._economyBusy||player._economyUncertain||state.pending||world.now<state.nextAt)return;
-    state.nextAt=world.now+200;
+    if(player._disconnecting||player._economyBusy||player._economyUncertain||state.pending||world.now+1e-6<state.nextAt)return;
+    const interval=world.movementInterval(player,200);
+    state.nextAt=Math.max(state.nextAt||world.now,world.now-interval)+interval;
     if(state.mapId!==player.mapId){state.mapId=player.mapId;state.maps.set(player.mapId,(state.maps.get(player.mapId)||0)+1);state.path=[];state.nextPlanAt=0;state.goal=null;}
     if(this.hazardous(player.mapId)){this.escapeZone(player,state);return;}
     const threats=this.threats(player);

@@ -42,6 +42,8 @@ export function validateGameplay(value,content){
     if(s.outdoorMapIds!==undefined&&(!Array.isArray(s.outdoorMapIds)||s.outdoorMapIds.some(id=>!s.mapIds.includes(id))))throw new Error('室外地图必须属于副本');
     if(s.allowedTitles!==undefined&&(!Array.isArray(s.allowedTitles)||s.allowedTitles.some(id=>!value.titles?.[id])))throw new Error('允许头衔包含不存在的头衔');
     if(s.reward?.titleId&&!value.titles?.[s.reward.titleId])throw new Error('奖励头衔不存在');
+    if(s.reward?.firstCompletionOnly!==undefined&&typeof s.reward.firstCompletionOnly!=='boolean')throw new Error('首通奖励标记必须是布尔值');
+    if(s.reward?.firstCompletionOnly&&!s.reward.titleId)throw new Error('首通奖励需要永久解锁标识');
     if(s.diskItemId!==undefined)item({kind:'item',itemId:s.diskItemId},'目标磁盘');
     if(s.reward?.gold!==undefined)integer(s.reward.gold,0,999999999,'奖励金钱');
     for(const entry of s.reward?.items||[]){item(entry,'奖励物品');integer(entry.quantity,1,999999,'奖励数量');}
@@ -60,7 +62,7 @@ export function validateGameplay(value,content){
       for(const kind of ['weapon','armor']){const id=s.initialState.equips?.[kind];if(id!==undefined&&id!==0)item({kind,itemId:id},'初始装备');}
     }
   }
-  for(const t of Object.values(value.titles||{})){text(t.name,120,'头衔名称');if(t.description!==undefined)text(t.description,4000,'头衔说明');if(t.weaponId!==undefined)item({kind:'weapon',itemId:t.weaponId},'头衔武器');}
+  for(const t of Object.values(value.titles||{})){text(t.name,120,'头衔名称');if(t.description!==undefined)text(t.description,4000,'头衔说明');if(t.weaponId!==undefined)item({kind:'weapon',itemId:t.weaponId},'头衔武器');if(t.equipInWorld!==undefined&&typeof t.equipInWorld!=='boolean')throw new Error('主世界装备标记必须是布尔值');}
   for(const shop of Object.values(value.shops||{})){
     text(shop.name,120,'商店名称');mapId(shop.mapId,'商店地图');if(shop.eventId!==undefined)integer(shop.eventId,1,999999,'商店事件');
     if(!Array.isArray(shop.goods)||shop.goods.length>1000)throw new Error('商品列表无效');

@@ -2,3 +2,4 @@
 #chat-mount .chat-panel{margin:0}
 @media(max-width:720px){#dialogue-face{--mv-face-size:96px}}
 .speech-popup>div{unicode-bidi:plaintext}.gab-window{overflow:hidden;max-height:calc(100% - 24px)}#gab-text{min-width:0}
+.gab-window[data-compact="true"]{max-width:min(660px,calc(100% - 36px));padding:10px 14px;gap:10px;align-items:flex-start}.gab-window[data-compact="true"] canvas{width:64px;height:64px}.gab-window[data-compact="true"] #gab-text{line-height:1.4}@media(max-width:720px){.gab-window[data-compact="true"]{left:10px;max-width:calc(100% - 20px);padding:9px;gap:8px}.gab-window[data-compact="true"] canvas{width:48px;height:48px}}

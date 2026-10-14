@@ -311,8 +311,11 @@ export class MySqlStore {
           const profile=profiles[0]?decode(profiles[0].profile):{},reward=result.reward,state=stateValue(decode(players[0].state));
           const granted={titleId:reward.titleId||null,newTitle:false,gold:0,items:[]};
           if(reward.titleId){profile.titles=Array.isArray(profile.titles)?profile.titles:[];if(!profile.titles.includes(reward.titleId)){profile.titles.push(reward.titleId);granted.newTitle=true;}}
-          if(Number.isSafeInteger(reward.gold)&&reward.gold>0){state.gold=(state.gold||0)+reward.gold;granted.gold=reward.gold;}
-          for(const item of reward.items||[]){addInventory(state,item.kind,item.itemId,item.quantity);granted.items.push(item);}
+          if(reward.firstCompletionOnly&&!reward.titleId)throw failure('INVALID_REWARD','First completion rewards require a permanent unlock id.');
+          if(!reward.firstCompletionOnly||granted.newTitle){
+            if(Number.isSafeInteger(reward.gold)&&reward.gold>0){state.gold=(state.gold||0)+reward.gold;granted.gold=reward.gold;}
+            for(const item of reward.items||[]){addInventory(state,item.kind,item.itemId,item.quantity);granted.items.push(item);}
+          }
           await connection.execute('UPDATE players SET state=?,revision=revision+1 WHERE id=?',[JSON.stringify(state),playerId]);
           await connection.execute('INSERT INTO player_profiles (player_id,profile) VALUES (?,?) ON DUPLICATE KEY UPDATE profile=VALUES(profile),revision=revision+1',[playerId,JSON.stringify(profile)]);
           result.rewardsByPlayer[playerId]=granted;

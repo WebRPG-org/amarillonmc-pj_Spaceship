@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {EventRuntime} from './events.mjs';
 import {addInventory,applyRecipe,computeDamage} from './combat.mjs';
-import {normalizeWeapons,weaponAttack,consumeAttackCost,equippedWeapon} from './weapons.mjs';
+import {normalizeWeapons,weaponAttack,consumeAttackCost,equippedWeapon,weaponMovementSpeed,cleaveTiles} from './weapons.mjs';
 import {OfflineAI,normalizeOfflineBehavior} from './offline-ai.mjs';
 import {MouseNavigation} from './mouse-navigation.mjs';
 import {ChatService,activeChatBubble,chatSettings,CHAT_LIMITS} from './chat.mjs';
@@ -135,11 +135,12 @@ export class World {
       if(priority===1&&event.x===dest.x&&event.y===dest.y&&(event.enemyId||page?.image?.characterName||page?.image?.tileId))return false;
     }return true;
   }
+  movementInterval(player,base=140){return base/weaponMovementSpeed(this.content,player);}
   move(player,direction,seq) {
     if(!DIRECTIONS[direction]||player.dead||player._dying||player._economyBusy)return;
     if(Number.isSafeInteger(seq)){if(seq<=player._lastSeq)return;player._lastSeq=seq;}
     player.direction=direction;
-    if(this.now-player._lastMove<140)return;
+    if(this.now-player._lastMove<this.movementInterval(player))return;
     player._lastMove=this.now;
     if(!this.canMove(player,direction)){this.triggerTouch(player,direction);return;}
     const [dx,dy]=DIRECTIONS[direction];Object.assign(player,this.content.wrapPosition(player.mapId,player.x+dx,player.y+dy));
@@ -229,7 +230,9 @@ export class World {
     const attack={id:randomUUID(),ownerId:source.id,source,mapId:source.mapId,x:source.x,y:source.y,originX:source.x,originY:source.y,maxDistance,distance:0,direction:source.direction,skillId:skill.id,skill,tool,dx,dy,speed:projectile?Number(tool?.meta?.tool_speed)||6:0,range:Math.max(1,Math.min(10,profile?.range||tool?.range||1)),area:tool?.area||'front_rhombus',born:this.now,expires:this.now+(projectile?Math.max(duration,maxDistance/6):duration)*1000,activeAt:this.now+delayed*1000,hit:new Map(),projectile};
     map.projectiles.set(attack.id,attack);
     // New ranged weapon animations represent impact and are emitted by hit().
-    this.broadcast(source.mapId,{type:'effect',kind:'attack',x:source.x+(profile?0:dx),y:source.y+(profile?0:dy),animationId:profile?.projectile?0:tool?.animationId||skill.animationId,skillId:skill.id,direction:source.direction});
+    const effect={type:'effect',kind:'attack',animationId:profile?.projectile?0:tool?.animationId||skill.animationId,skillId:skill.id,direction:source.direction};
+    const positions=profile?.mode==='cleave'?cleaveTiles(source):[{x:source.x+(profile?0:dx),y:source.y+(profile?0:dy)}];
+    for(const position of positions)if(profile?.mode!=='cleave'||this.attackLineClear(source.mapId,source.x,source.y,position.x,position.y))this.broadcast(source.mapId,{...effect,...position});
     if(!delayed)this.resolveAttack(attack);
   }
   resolveAttack(attack) {
@@ -270,6 +273,7 @@ export class World {
     if(attack.distance>=attack.maxDistance-1e-8)attack.expires=0;
   }
   hit(source,target,skill,tool) {
+    if(this.hooks.beforeHit?.(source,target,skill,tool)===false)return;
     let result;try{result=computeDamage(skill,source,target,this.random);}catch(error){this.runtimeDiagnostics.set(`formula:${skill.id}`,error.message);return;}
     if(result.missed){this.broadcast(source.mapId,{type:'effect',kind:'damage',x:target.x,y:target.y,value:'MISS',targetId:target.id});return;}
     const type=skill.damage?.type||0,heal=[3,4].includes(type),mp=[2,4,6].includes(type),field=mp?'mp':'hp',max=mp?'maxMp':'maxHp';
@@ -331,19 +335,20 @@ export class World {
     return this.enqueue(player,async()=>{
       if(player.dead||player._dying)throw new Error('死亡状态无法拾取');
       this.validateRequest(requestId);player._economyBusy=true;
+      this.hooks.onPickupAttempt?.(player,dropId,requestId);
       try{await this.store.savePlayer(player.id,cloneState(player));const outcome=await this.store.claimDrop({playerId:player.id,requestId,dropId,mutator:(state,drop)=>{
         if(drop.mapId!==player.mapId||distance(player,drop)>1.5)throw new Error('物品不在可拾取范围');
         if(drop.kind==='gold'){state.gold=(state.gold||0)+drop.quantity;}
         else if(drop.kind==='bag'||drop.metadata?.kind==='bag'){for(const item of drop.metadata?.items||[])addInventory(state,item.kind,item.itemId,item.quantity,item);}
         else addInventory(state,drop.kind||drop.metadata?.kind||'item',drop.itemId,drop.quantity,drop.metadata);normalizeWeapons(state,this.content.weaponProfiles);return{picked:drop.id};
-      }});if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.maps.get(outcome.drop.mapId)?.drops.delete(outcome.drop.id);this.notice(player,'已拾取物品');}
+      }});if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.hooks.onPickup?.(player,outcome.drop,outcome);this.maps.get(outcome.drop.mapId)?.drops.delete(outcome.drop.id);this.notice(player,'已拾取物品');}
       finally{player._economyBusy=false;}
     });
   }
   craft(player,recipeId,requestId) {
     return this.enqueue(player,async()=>{if(player.dead)throw new Error('死亡状态无法合成');this.validateRequest(requestId);
       await this.store.savePlayer(player.id,cloneState(player));
-      const outcome=await this.store.commitPlayer(player.id,requestId,state=>applyRecipe(state,this.content.getRecipe(recipeId),this.content.database));if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);this.notice(player,'合成成功');
+      const outcome=await this.store.commitPlayer(player.id,requestId,state=>({...applyRecipe(state,this.content.getRecipe(recipeId),this.content.database),action:'craft',recipeId}));if(!outcome.duplicate)this.adoptEconomy(player,outcome.state);if(outcome.result?.action==='craft'&&outcome.result.recipeId===recipeId)this.hooks.onCraft?.(player,this.content.getRecipe(recipeId),outcome);this.notice(player,'合成成功');
     });
   }
   inventoryAction(player,message){return this.enqueue(player,async()=>{
@@ -366,9 +371,9 @@ export class World {
     return this.enqueue(player,async()=>{if(player.dead)throw new Error('死亡状态无法使用物品');this.validateRequest(requestId);itemId=Number(itemId);
       const item=this.content.database.Items[itemId];if(!item||!item.effects?.some(e=>[11,12,22].includes(e.code)))throw new Error('该物品暂无可用的场景效果');
       await this.store.savePlayer(player.id,cloneState(player));
-      const outcome=await this.store.commitPlayer(player.id,requestId,state=>{if(!(state.inventory||[]).some(i=>i.kind==='item'&&i.itemId===itemId&&i.quantity>0))throw new Error('没有该物品');if(item.consumable)addInventory(state,'item',itemId,-1);return{itemId};});
-      if(outcome.duplicate)return;this.adoptEconomy(player,outcome.state);
-      this.hit(player,player,item,null);this.persist(player);
+      const outcome=await this.store.commitPlayer(player.id,requestId,state=>{if(!(state.inventory||[]).some(i=>i.kind==='item'&&i.itemId===itemId&&i.quantity>0))throw new Error('没有该物品');if(item.consumable)addInventory(state,'item',itemId,-1);return{action:'useItem',itemId};});
+      if(outcome.duplicate){if(outcome.result?.action==='useItem'&&outcome.result.itemId===itemId)this.hooks.onUseItem?.(player,item,outcome);return;}this.adoptEconomy(player,outcome.state);
+      this.hit(player,player,item,null);this.hooks.onUseItem?.(player,item,outcome);this.persist(player);
     });
   }
   equip(player,kind,itemId,instanceId=null) {
@@ -427,7 +432,7 @@ export class World {
         if(event._eventRouteOwner)continue;
         const target=this.targets(event).filter(p=>distance(p,event)<=7).sort((a,b)=>distance(a,event)-distance(b,event))[0];if(!target)continue;
         event.direction=Math.abs(target.x-event.x)>Math.abs(target.y-event.y)?(target.x>event.x?6:4):(target.y>event.y?2:8);
-        if(distance(target,event)<=1&&this.now>=event.nextAttack){event.nextAttack=this.now+1100;this.hit(event,target,this.content.database.Skills[1]);}
+        if(distance(target,event)<=1){if(this.now>=event.nextAttack){event.nextAttack=this.now+1100;this.hit(event,target,this.content.database.Skills[1]);}}
         else if(this.now>=event.nextMove){event.nextMove=this.now+650;if(this.canMove(event,event.direction)){const[dx,dy]=DIRECTIONS[event.direction];Object.assign(event,this.content.wrapPosition(map.id,event.x+dx,event.y+dy));}}
       }
       for(const attack of map.projectiles.values()) {
@@ -448,7 +453,7 @@ export class World {
       eventViews.push({id:e.id,eventId:e.eventId,sourceMapId:e.sourceMapId,pageIndex:page?.index??-1,threeDSource:eventThreeDSource(e,page,map.id),name:e.name,x:e.x,y:e.y,direction:e.direction,image:page?.image||e.image,priorityType:page?.priorityType??e.priorityType,enemyId:e.enemyId,npcKey:e.npcKey,structureKey:e.structureKey,hp:e.hp,maxHp:e.maxHp,erased:e.erased||!page,disabled:!!page?.engineDisabledReason,service:e.service,overhead:this.events.overheadFor?.(player,e,page)||null});
     }
     return{type:'snapshot',tick:this.tick,serverTime:this.now,playerId:player.id,mapId:map.id,hazards:this.hazards.snapshot(map.id),devTools:this.devTools,pvp:map.pvp,threeD:threeDSnapshot(map.raw,player,this.getVariable.bind(this),eventViews),chat:{position:chatSettings(this.content).position,maxLength:CHAT_LIMITS.maxLength},
-      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,chatBubble:activeChatBubble(p,this.clock()),appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
+      players:[...this.players.values()].filter(p=>p.mapId===map.id).map(p=>({id:p.id,name:p.name,x:p.x,y:p.y,direction:p.direction,characterName:p.characterName,characterIndex:p.characterIndex,hp:p.hp,maxHp:p.maxHp,mp:p.mp,maxMp:p.maxMp,level:p.level,dead:p.dead,connected:p._connected,chatBubble:activeChatBubble(p,this.clock()),appearance:p.appearance,offlineBehavior:normalizeOfflineBehavior(p.offlineBehavior),offlineActivity:p.offlineActivity||null})),events:eventViews,drops:[...map.drops.values()],projectiles:[...map.projectiles.values()].filter(p=>p.projectile).map(p=>({id:p.id,x:p.x,y:p.y,direction:p.direction,skillId:p.skillId,image:p.tool?.image})),self:{movementSpeed:weaponMovementSpeed(this.content,player),inventory:player.inventory,gold:player.gold,skills:player.skills,equips:player.equips,ending:player.ending,profile:player.profile,appearance:player.appearance,offlineBehavior:normalizeOfflineBehavior(player.offlineBehavior),offlineActivity:player.offlineActivity||null,navigation:player.navigation||null},zone:map.zone,instance:this.hooks.snapshot?.(player)||null};
   }
   sendSnapshot(player){const snapshot=this.snapshot(player);if(snapshot)this.send(player.id,snapshot);}
   async close(){this.hazards.close();await Promise.all([...this.pendingWorldDrops.values()].map(p=>this.publishWorldDrops(p)));for(const id of [...this.players.keys()])await this.detach(id);}

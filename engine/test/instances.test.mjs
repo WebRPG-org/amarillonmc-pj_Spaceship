@@ -5,6 +5,7 @@ import {loadContent} from '../server/content.mjs';
 import {GameHost} from '../server/instances.mjs';
 import {DIRECTIONS} from '../server/world.mjs';
 import {PUBLIC_CITY_MAPS,PUBLIC_CITY_SPAWN,PUBLIC_CITY_SERVICES,PUBLIC_CITY_VERSION} from '../server/public-city.mjs';
+import {addInventory} from '../server/combat.mjs';
 
 const clone=x=>structuredClone(x);
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
@@ -52,7 +53,9 @@ class MemoryStore extends MemoryScope {
     if(result.success&&result.reward?.titleId){result.rewardsByPlayer={};for(const p of result.participants||[]){
       if(p.outcome!=='completed'||r.members.get(p.id)!=='active')continue;
       const profile=await this.loadProfile(p.id),titles=[...(profile.titles||[])],titleId=result.reward.titleId,newTitle=!titles.includes(titleId);
-      if(newTitle)titles.push(titleId);await this.updateProfile(p.id,{titles});result.rewardsByPlayer[p.id]={titleId,newTitle,gold:0,items:[]};
+      if(newTitle)titles.push(titleId);await this.updateProfile(p.id,{titles});const granted={titleId,newTitle,gold:0,items:[]};
+      if(!result.reward.firstCompletionOnly||newTitle){const state=clone(this.states.get(p.id));for(const item of result.reward.items||[]){addInventory(state,item.kind,item.itemId,item.quantity);granted.items.push(item);}this.states.set(p.id,state);}
+      result.rewardsByPlayer[p.id]=granted;
     }}
     r.status='finished';r.result=clone(result);r.scope.closed=true;this.finishes++;return{result,duplicate:false};
   }
@@ -87,7 +90,7 @@ function pathTo(world,player,goal,allowBlockedGoal=false){
     }
   }return null;
 }
-async function walk(f,p,goal,allowBlockedGoal=false){const world=f.host.playerWorld(p.id),path=pathTo(world,p,goal,allowBlockedGoal);assert.ok(path,`No path on map ${p.mapId} from ${p.x},${p.y}`);for(const direction of path){await f.advance();await f.host.command(p,{type:'move',direction});await p._queue;}return path.length;}
+async function walk(f,p,goal,allowBlockedGoal=false){const world=f.host.playerWorld(p.id),path=pathTo(world,p,goal,allowBlockedGoal);assert.ok(path,`No path on map ${p.mapId} from ${p.x},${p.y}`);for(const direction of path){await f.advance(Math.max(150,Math.ceil((world.movementInterval?.(p)||140)/50)*50));await f.host.command(p,{type:'move',direction});await p._queue;}return path.length;}
 async function service(f,p,action,containerId){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.service?.action===action&&(!containerId||e.service.containerId===containerId));assert.ok(event,`missing ${action} on ${p.mapId}`);await walk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);await f.host.command(p,{type:'interact',targetId:event.id});return event;}
 async function portal(f,p,toMap){const world=f.host.playerWorld(p.id),event=[...world.maps.get(p.mapId).events.values()].find(e=>e.pages.some(pg=>pg.list.some(c=>c.code===201&&c.parameters[1]===toMap)));assert.ok(event,`missing portal ${p.mapId}->${toMap}`);await walk(f,p,pos=>pos.x===event.x&&pos.y===event.y,true);await p._queue;for(let elapsed=0;p.mapId!==toMap&&elapsed<5000;elapsed+=100)await f.advance(100);assert.equal(p.mapId,toMap);}
 
@@ -371,4 +374,127 @@ test('death, timeout and departure cannot award the adventure title or leak loca
     }
     assert.equal(r.status,'ended');assert.equal(f.host.locations.has(p.id),false);assert.deepEqual(f.store.states.get(p.id),external);assert.ok(!(await f.store.loadProfile(p.id)).titles?.includes('meteor'));
   });
+});
+
+async function tutorial(f,id='rose-student'){
+  let p=f.host.getPlayer(id)||await f.connect(id);await f.host.world.transfer(p,41,25,15);
+  const rose=[...f.host.world.maps.get(41).events.values()].find(e=>e.service?.kind==='tutorialEntrance');assert.ok(rose);
+  await f.host.command(p,{type:'interact',targetId:rose.id});
+  assert.equal(f.messages.get(id).filter(m=>m.type==='service').at(-1).scenarios[0].id,'rose-orientation');
+  await f.host.command(p,{type:'instance',action:'create',definitionId:'rose-orientation',mode:'pvpve'});
+  p=f.host.getPlayer(id);const r=f.host.locations.get(id);await f.host.command(p,{type:'instance',action:'start'});return{p,r};
+}
+async function tutorialCourse(f,p,r){
+  for(const checkpoint of ['a','b','c']){
+    assert.equal(r.tutorial.step.id,`move-${checkpoint}`);
+    const e=[...r.world.maps.get(57).events.values()].find(e=>e.tutorialCheckpoint===checkpoint);
+    await walk(f,p,pos=>Math.abs(pos.x-e.x)+Math.abs(pos.y-e.y)<=1);await f.advance(50);
+  }
+  await portal(f,p,58);
+  for(const [step,weaponId]of [['unarmed',0],['slash',66],['throw',61],['club',64],['firearm',62],['staff',63]]){
+    assert.equal(r.tutorial.step.id,step);
+    if(weaponId)await f.host.command(p,{type:'equip',kind:'weapon',itemId:weaponId});
+    const e=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget===step);assert.ok(e);
+    await walk(f,p,pos=>Math.abs(pos.x-e.x)+Math.abs(pos.y-e.y)===1);
+    p.direction=e.x>p.x?6:e.x<p.x?4:e.y>p.y?2:8;
+    await f.host.command(p,{type:'attack',skillId:1,requestId:`rose-${r.id}-${step}`});await f.advance(800);await p._queue;
+    assert.equal(e.dead,true,`${step} target defeated with normal attack`);
+  }
+  assert.equal(r.tutorial.step.id,'pickup');
+  const drop=[...r.world.maps.get(58).drops.values()].find(d=>r.tutorial.dropIds.has(d.id));assert.ok(drop);
+  await walk(f,p,pos=>Math.abs(pos.x-drop.x)+Math.abs(pos.y-drop.y)<=1);await f.host.command(p,{type:'pickup',entityId:drop.id,requestId:`pickup-${r.id}`});
+  await portal(f,p,59);await service(f,p,'container');assert.equal(r.tutorial.step.id,'craft');
+  const before=qty(p,47);await f.host.command(p,{type:'craft',recipeId:'item:40',requestId:`craft-${r.id}`});assert.equal(qty(p,47),before-1);assert.equal(r.tutorial.step.id,'use');
+  await f.host.command(p,{type:'craft',recipeId:'item:40',requestId:`craft-${r.id}`});assert.equal(qty(p,47),before-1,'duplicate craft cannot consume twice or skip use');
+  await f.host.command(p,{type:'useItem',itemId:40,requestId:`bread-${r.id}`});assert.equal(r.tutorial.step.id,'final');
+  await portal(f,p,60);await f.host.command(p,{type:'equip',kind:'weapon',itemId:66});
+  for(const enemy of [...r.world.maps.get(60).events.values()].filter(e=>e.enemyId)){
+    let attempts=0;while(!enemy.dead&&attempts++<30){
+      await f.host.command(p,{type:'navigate',x:enemy.x,y:enemy.y,targetId:enemy.id,skillId:1,requestId:`final-${r.id}-${enemy.id}-${attempts}`});await f.advance(1000);
+      if(p.hp<p.maxHp/2)await f.host.command(p,{type:'useItem',itemId:102,requestId:`heal-${r.id}-${attempts}`});
+    }
+    assert.equal(enemy.dead,true,`graduate opponent actually defeated player=${p.x},${p.y} enemy=${enemy.x},${enemy.y} hp=${enemy.hp} notices=${f.messages.get(p.id).filter(m=>m.type==='notice').slice(-6).map(m=>m.message).join('|')}`);assert.equal(p.dead,false);
+  }
+  await p._queue;assert.equal(r.tutorial.step.id,'exit');await service(f,p,'tutorialExit');assert.equal(r.result.reason,'tutorial-completed');
+}
+
+test('ROSE tutorial completes every real action, unlocks once and carries only equipped owned reward into DTS',async()=>{
+  const f=await fixture(),{p,r}=await tutorial(f),outside=clone(f.store.states.get(p.id));
+  assert.equal(r.mode,'pve');assert.equal(r.scenario.maxPlayers,1);assert.ok(f.messages.get(p.id).some(m=>m.type==='gab'&&m.graphicName==='ROSE'));
+  await assert.rejects(r.world.transfer(p,60,4,20),/先完成/);
+  await tutorialCourse(f,p,r);assert.equal(r.result.rewardsByPlayer[p.id].newTitle,true);const restored=f.store.states.get(p.id);assert.deepEqual(restored.inventory.filter(i=>i.kind!=='weapon'||i.itemId!==66),outside.inventory);assert.equal(restored.inventory.filter(i=>i.kind==='weapon'&&i.itemId===66).length,1);assert.equal(restored.gold,outside.gold);
+  const again=await tutorial(f,p.id);await tutorialCourse(f,again.p,again.r);assert.equal(again.r.result.rewardsByPlayer[p.id].newTitle,false);assert.deepEqual((await f.store.loadProfile(p.id)).titles,['red-kill-sword']);
+  const dts=f.host.scenario;
+  assert.ok(!r.seed({...p,profile:{titles:['red-kill-sword'],equippedTitle:'red-kill-sword'}}).entryTitle,'tutorial excludes equipped title bonus');
+  const ordinary=new (r.constructor)({id:again.r.id,ownerId:p.id,content:f.content,store:f.store,host:f.host,scenario:dts});
+  for(const profile of [{},{equippedTitle:'red-kill-sword'},{titles:['red-kill-sword']}])assert.ok(!ordinary.seed({...p,equips:{weapon:0,armor:121},profile}).inventory.some(i=>i.kind==='weapon'&&i.itemId===66));
+  const owner=f.host.getPlayer(p.id);await f.host.command(owner,{type:'equip',kind:'weapon',itemId:66});const awarded=ordinary.seed(owner);assert.equal(awarded.inventory.filter(i=>i.kind==='weapon'&&i.itemId===66).length,1);
+});
+
+test('ROSE tutorial cannot skip wrong weapons, looting, crafting or graduation; free supplies recover consumed resources',async()=>{
+  const f=await fixture(),{p,r}=await tutorial(f,'rose-guards');
+  const other=await f.connect('rose-other');await assert.rejects(f.host.command(other,{type:'instance',action:'join',instanceId:r.id}),/不存在|私人/);
+  const finalExit=[...r.world.maps.get(60).events.values()].find(e=>e.service?.action==='tutorialExit');await assert.rejects(r.tutorial.interact(p,finalExit),/先完成/);
+  // Use the three ordinary walk checkpoints before testing the live combat guard.
+  for(const id of ['a','b','c']){const e=[...r.world.maps.get(57).events.values()].find(e=>e.tutorialCheckpoint===id);await walk(f,p,pos=>Math.abs(pos.x-e.x)+Math.abs(pos.y-e.y)<=1);await f.advance(50);}
+  await portal(f,p,58);const e=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='unarmed');
+  await f.host.command(p,{type:'equip',kind:'weapon',itemId:66});await walk(f,p,pos=>Math.abs(pos.x-e.x)+Math.abs(pos.y-e.y)===1);p.direction=e.x>p.x?6:e.x<p.x?4:e.y>p.y?2:8;
+  await f.host.command(p,{type:'attack',skillId:1});await f.advance(700);assert.equal(e.dead,undefined);assert.equal(e.hp,1);assert.equal(r.tutorial.step.id,'unarmed');
+  await assert.rejects(r.world.transfer(p,59,4,18),/先完成/);
+  await assert.rejects(f.host.command(p,{type:'craft',recipeId:'item:40',requestId:'no-materials'}),/配方书|材料/);assert.equal(r.tutorial.step.id,'unarmed');
+  p.inventory=p.inventory.filter(i=>!(i.kind==='item'&&[101,14].includes(i.itemId)));const thrown=p.inventory.find(i=>i.kind==='weapon'&&i.itemId===61);thrown.durability=0;
+  await service(f,p,'tutorialGuide');assert.ok(qty(p,101)>=20);assert.ok(qty(p,14)>=3);assert.ok(p.inventory.some(i=>i.kind==='weapon'&&i.itemId===61&&i.durability>0));assert.equal(r.tutorial.step.id,'unarmed');
+  await f.host.command(p,{type:'instance',action:'leave'});assert.ok(!(await f.store.loadProfile(p.id)).titles?.includes('red-kill-sword'));
+});
+
+test('ROSE tutorial death, timeout, disconnect and voluntary departure never grant a completion reward',async t=>{
+  for(const cause of ['death','timeout','disconnect','leave'])await t.test(cause,async()=>{
+    const f=await fixture(),{p,r}=await tutorial(f,`rose-${cause}`),outside=clone(f.store.states.get(p.id));
+    if(cause==='death'){r.world.damage(p,p.hp);await p._queue;await f.advance(100);await r._queue;}
+    else if(cause==='timeout'){r.startedAt-=r.durationSeconds*1000;await f.advance(100);await r._queue;}
+    else if(cause==='disconnect'){
+      await f.host.disconnect(p.id);await f.advance(25000);assert.equal(r.tutorial.step.id,'move-a');
+      const resumed=await f.host.connect(await f.store.loadPlayer(p.id),m=>f.messages.get(p.id).push(m));assert.equal(resumed,p);assert.equal(r.tutorial.step.id,'move-a');await f.host.command(p,{type:'instance',action:'leave'});
+    }else await f.host.command(p,{type:'instance',action:'leave'});
+    assert.equal(r.status,'ended');assert.deepEqual(f.store.states.get(p.id),outside);assert.ok(!(await f.store.loadProfile(p.id)).titles?.includes('red-kill-sword'));
+  });
+});
+
+test('ROSE committed NPC, pickup and craft actions survive disconnection before their callbacks',async()=>{
+  const f=await fixture(),{p,r}=await tutorial(f,'rose-commit-race');
+  // This test isolates the transaction boundary; the full course above verifies
+  // how the player actually reaches this stage without injected progress.
+  r.tutorial.index=8;await r.world.transfer(p,58,29,18);await r.world.equip(p,'weapon',63);p.direction=8;
+  const scope=r.world.store,enemy=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='staff');
+  async function disconnectedDuring(method,action){
+    const original=scope[method].bind(scope);let disconnected;
+    scope[method]=async(...args)=>{const answer=await original(...args);scope[method]=original;disconnected=f.host.disconnect(p.id);assert.equal(p._connected,false);return answer;};
+    try{await action();await p._queue;await disconnected;assert.equal(p._connected,false);}
+    finally{scope[method]=original;}
+    await f.host.connect(await f.store.loadPlayer(p.id),m=>f.messages.get(p.id).push(m));
+  }
+  await disconnectedDuring('createDrops',async()=>{await r.world.attack(p,1,'race-staff');await f.advance(800);});assert.equal(enemy.dead,true);assert.equal(r.tutorial.step.id,'pickup');
+  const drop=[...r.world.maps.get(58).drops.values()].find(d=>r.tutorial.dropIds.has(d.id));assert.ok(drop);
+  await disconnectedDuring('claimDrop',()=>r.world.pickup(p,drop.id,'race-pickup'));assert.equal(r.tutorial.step.id,'search');
+  await r.world.transfer(p,59,8,8);await service(f,p,'container');
+  await disconnectedDuring('commitPlayer',()=>r.world.craft(p,'item:40','race-craft'));assert.equal(r.tutorial.step.id,'use');
+  await r.world.useItem(p,40,'race-craft');assert.equal(r.tutorial.step.id,'use','a reused craft request cannot fake a consumption');
+  await r.world.useItem(p,40,'race-use');assert.equal(r.tutorial.step.id,'final');
+  await f.host.command(p,{type:'instance',action:'leave'});
+});
+
+test('ROSE guide recovers a failed target reward and a lost committed pickup response without skipping actions',async()=>{
+  const f=await fixture(),{p,r}=await tutorial(f,'rose-recovery');r.tutorial.index=8;
+  await r.world.transfer(p,58,29,18);await r.world.equip(p,'weapon',63);p.direction=8;
+  const scope=r.world.store,enemy=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='staff'),create=scope.createDrops.bind(scope);
+  scope.createDrops=async()=>{throw new Error('temporary reward store outage');};
+  await r.world.attack(p,1,'failed-kill');await f.advance(800);await p._queue;assert.equal(enemy.dead,true);assert.equal(r.tutorial.step.id,'staff');scope.createDrops=create;
+  await service(f,p,'tutorialGuide');assert.equal(enemy.dead,false);assert.equal(enemy.hp,enemy.maxHp);assert.equal(r.tutorial.step.id,'staff');
+  await walk(f,p,pos=>Math.abs(pos.x-enemy.x)+Math.abs(pos.y-enemy.y)===1);p.direction=enemy.x>p.x?6:enemy.x<p.x?4:enemy.y>p.y?2:8;
+  await r.world.attack(p,1,'retry-kill');await f.advance(800);assert.equal(r.tutorial.step.id,'pickup');
+  const drop=[...r.world.maps.get(58).drops.values()].find(d=>r.tutorial.dropIds.has(d.id)),claim=scope.claimDrop.bind(scope);let lose=true;
+  scope.claimDrop=async(...args)=>{const answer=await claim(...args);if(lose){lose=false;const error=new Error('lost pickup response');error.economyUncertain=true;throw error;}return answer;};
+  const before=qty(p,102);await assert.rejects(r.world.pickup(p,drop.id,'uncertain-pickup'),/lost pickup/);assert.equal(r.tutorial.step.id,'pickup');assert.equal(qty(p,102),before+1);
+  await service(f,p,'tutorialGuide');assert.equal(r.tutorial.step.id,'search');assert.equal(qty(p,102),before+1,'idempotent recovery does not grant a second drop');
+  await f.host.command(p,{type:'instance',action:'leave'});
 });
