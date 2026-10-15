@@ -1,13 +1,14 @@
 import {Renderer} from './renderer.mjs';
 import {MapWorkspace} from './editor-maps-workspace.mjs';
+import {restartEngine} from './editor-restart.mjs';
 
 const $=s=>document.querySelector(s),esc=value=>String(value??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const state={tab:'scenarios',selected:null,group:'shops',doc:null,dirty:false};
 let content,gameplay,renderer,mapWorkspace,assetCache;
 const status=(text,error=false)=>{$('#status').textContent=text;$('#status').classList.toggle('error',error);};
-async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-Editor-Request':'1',...options.headers}}),value=await response.json();if(!response.ok)throw new Error(value.error||`HTTP ${response.status}`);return value;}
+async function api(path,options={}){const response=await fetch(path,{...options,headers:{'Content-Type':'application/json','X-Editor-Request':'1',...options.headers}}),value=await response.json();if(!response.ok)throw Object.assign(new Error(value.error||`HTTP ${response.status}`),{status:response.status});return value;}
 const read=(kind,id)=>api(`/api/editor/document?kind=${kind}${id?`&id=${id}`:''}`);
-function busy(value){$('#workspace').inert=value;$('#navigation').inert=value;$('#reload').disabled=value;$('#workspace').setAttribute('aria-busy',String(value));}
+function busy(value){value=value||!!state.restarting;$('#workspace').inert=value;$('#navigation').inert=value;$('#reload').disabled=value;$('#restart').disabled=value;$('#workspace').setAttribute('aria-busy',String(value));}
 async function save(kind,patch,id){
   if(state.saving)throw new Error('正在保存，请稍候');state.saving=true;busy(true);
   try{const value=await api('/api/editor/document?kind='+kind+(id?'&id='+id:''),{method:'PUT',body:JSON.stringify({revision:state.doc.revision,patch})});state.doc=value;state.dirty=false;status('已保存。请重启服务应用配置。备份：'+value.backup);return value;}
@@ -28,7 +29,27 @@ function bind(id,fn){$(`#${id}`)?.addEventListener('click',()=>Promise.resolve()
 function details(html){$('#details').innerHTML=html;$('#details').oninput=()=>state.dirty=true;$('#details').onchange=()=>state.dirty=true;}
 function toolbar(title,extra=''){ $('#toolbar').innerHTML=`<strong>${esc(title)}</strong>${extra}`;}
 function list(entries,selected,handler){$('#list').innerHTML=entries.map(([id,label])=>`<button class="${String(id)===String(selected)?'active':''}" data-id="${esc(id)}">${esc(label)}</button>`).join('');$('#list').onclick=event=>{const b=event.target.closest('[data-id]');if(b)go(()=>handler(b.dataset.id));};}
-async function go(fn){if(state.navigating||state.saving)return;if(state.dirty&&!confirm('有尚未保存的修改。放弃这些修改并继续？'))return;state.navigating=true;busy(true);try{state.dirty=false;await fn();}catch(error){status(error.message,true);}finally{state.navigating=false;busy(!!state.saving);}}
+async function go(fn){if(state.navigating||state.saving||state.restarting)return;if(state.dirty&&!confirm('有尚未保存的修改。放弃这些修改并继续？'))return;state.navigating=true;busy(true);try{state.dirty=false;await fn();}catch(error){status(error.message,true);}finally{state.navigating=false;busy(!!state.saving);}}
+
+async function restartService(){
+  if(state.navigating||state.saving||state.restarting)return;
+  state.restarting=true;busy(true);
+  try{
+    const current=await api('/api/editor/restart',{signal:AbortSignal.timeout(5000)});
+    const pending=!!state.restartRequestId&&state.restartRequestId===current.requestId&&current.state!=='failed';
+    if(!pending&&['preparing','saving'].includes(current.state))throw new Error('其他编辑器正在重启服务，请稍后再查看。');
+    if(!pending){
+      if(!confirm('重启新引擎服务？\n\n将保存玩家数据、结束所有运行中的副本并让在线玩家断线；玩家需要刷新页面并重新登录。\n成功后重新导入已保存内容；编辑器中未保存的修改将被放弃。\n账号和永久角色数据不会清空。'))return;
+      state.restartRequestId=crypto.randomUUID();
+    }
+    status('正在请求重启新引擎服务…');
+    await restartEngine(api,{instanceId:current.instanceId,requestId:state.restartRequestId,onProgress:status});
+    // Only discard drafts after the server confirms a new runtime is ready.
+    content=await api('/api/content');assetCache=null;state.dirty=false;
+    await tab(state.tab);state.restartRequestId=null;status('新引擎服务已重启，已重新导入保存的内容。玩家请刷新页面并重新登录。');
+  }catch(error){status(error.message,true);}
+  finally{state.restarting=false;busy(false);}
+}
 
 function rowList(name,rows,type){
   const extra=type==='goods'?'价格':type==='drops'?'概率':'数量';
@@ -111,5 +132,5 @@ async function admin(){
 }
 
 async function tab(name){mapWorkspace?.dispose();mapWorkspace=null;state.tab=name;state.selected=null;$('#workspace').classList.toggle('map-workspace',name==='maps');$('#workspace').classList.toggle('with-preview',['maps','animations'].includes(name));for(const b of document.querySelectorAll('[data-tab]'))b.classList.toggle('active',b.dataset.tab===name);if(renderer){renderer.showGrid=name==='maps';renderer.effekseer.reset();}await({scenarios,maps,economy,weapons,animations,admin}[name])();}
-$('#navigation').onclick=event=>{const b=event.target.closest('[data-tab]');if(b)go(()=>tab(b.dataset.tab));};$('#reload').onclick=()=>go(()=>tab(state.tab));window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
+$('#navigation').onclick=event=>{const b=event.target.closest('[data-tab]');if(b)go(()=>tab(b.dataset.tab));};$('#reload').onclick=()=>go(()=>tab(state.tab));$('#restart').onclick=restartService;window.addEventListener('beforeunload',event=>{if(state.dirty){event.preventDefault();event.returnValue='';}});
 try{content=await api('/api/content');await tab('scenarios');status('工程已载入。先选择内容，保存前会检查文件版本。');}catch(error){status(error.message,true);}

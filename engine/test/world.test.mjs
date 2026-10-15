@@ -29,6 +29,19 @@ class DelayedStore {
 async function setup(state){const store=new DelayedStore(),content=createContent(),messages=[];const world=new World({content,store,clock:()=>100000,random:()=>.5});const account={id:'account-1',username:'Test',state};const player=await world.connect(account,m=>messages.push(m));return{store,content,world,player,account,messages};}
 const quantity=(state,id)=>state.inventory.find(i=>i.kind==='item'&&i.itemId===id)?.quantity||0;
 
+test('loading legacy empty equipment slots normalizes and persists the same unequipped state',async()=>{
+  for(const equips of [{},{weapon:null,armor:''},{weapon:'0',armor:0}]){
+    const f=await setup({mapId:1,x:1,y:1,equips,inventory:[]});
+    assert.deepEqual(f.world.snapshot(f.player).self.equips,{weapon:0,armor:0,weaponInstanceId:null});
+    assert.deepEqual(f.store.states.get(f.player.id).equips,f.player.equips);
+    await f.world.disconnect(f.player.id);
+    const saved=clone(f.store.states.get(f.player.id));
+    const restored=await f.world.connect({...f.account,state:saved},()=>{});
+    assert.deepEqual(restored.equips,{weapon:0,armor:0,weaponInstanceId:null});
+    assert.deepEqual(restored.inventory,[],'normalizing an empty slot does not create equipment');
+  }
+});
+
 test('a queued event reward survives a delayed craft transaction and dependent commands wait',async()=>{
   const f=await setup();await f.world.grant(f.player,'item',1,2);
   f.store.commitGate=deferred();

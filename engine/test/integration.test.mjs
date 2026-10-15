@@ -305,6 +305,31 @@ test('HTTP + two WebSockets + real MySQL authoritative-world integration', { ski
       attacker.send({type:'instance',action:'leave',contextInstanceId:second.instance.id});
       await attacker.snapshot(s => !s.instance,after);
     });
+    await t.test('editor restart settles an active round in MySQL and restores the outside account after login', async () => {
+      await eventually(() => !app.host.locations.has(attackerAccount.playerId) && !app.host.transitions.has(attackerAccount.playerId), 'previous departure settled');
+      const outside = await store.loadPlayer(attackerAccount.playerId), profile = await store.loadProfile(attackerAccount.playerId);
+      let after = attacker.messages.length;
+      attacker.send({type:'instance',action:'create',mode:'pve',contextInstanceId:null});
+      const joined = await attacker.snapshot(s => s.instance?.status === 'waiting', after);
+      await eventually(() => !app.host.transitions.has(attackerAccount.playerId), 'room creation settled');
+      attacker.send({type:'instance',action:'start',contextInstanceId:joined.instance.id});
+      await attacker.snapshot(s => s.instance?.status === 'active', after);
+      const beforeHost = app.host, previous = await (await fetch(`${base}/api/editor/restart`)).json(), requestId = randomUUID();
+      const disconnected = once(attacker.ws,'close');
+      const response = await fetch(`${base}/api/editor/restart`, {method:'POST',headers:{'Content-Type':'application/json','X-Editor-Request':'1'},body:JSON.stringify({requestId,instanceId:previous.instanceId})});
+      assert.equal(response.status,202);
+      let status;
+      await eventually(async () => {status = await (await fetch(`${base}/api/editor/restart`)).json();return ['succeeded','failed'].includes(status.state);}, 'editor restart completed', 15000);
+      assert.equal(status.state,'succeeded',status.error);assert.notEqual(status.instanceId,previous.instanceId);assert.notEqual(app.host,beforeHost);
+      assert.equal((await disconnected)[0],1012);
+      assert.equal((await fetch(`${base}/api/session`,{headers:{Authorization:`Bearer ${attackerAccount.token}`}})).status,401);
+      const authenticated = await session('login',attackerName);attacker = await connectSocket(base,authenticated.token);clients.push(attacker);
+      const restored = await attacker.snapshot();
+      assert.equal(restored.instance,null);assert.equal(restored.mapId,outside.state.mapId);assert.equal(restored.self.gold,outside.state.gold);assert.deepEqual(restored.self.inventory,outside.state.inventory);assert.deepEqual(restored.self.equips,outside.state.equips);
+      assert.deepEqual(await store.loadProfile(attackerAccount.playerId),profile);
+      const records = await store.listPlayerRecords(attackerAccount.playerId);
+      assert.ok(records.some(r=>r.id===joined.instance.id&&r.status==='finished'&&r.result.reason==='server-shutdown'));
+    });
   } finally {
     for (const client of clients) if (client.ws.readyState !== WebSocket.CLOSED) await client.close();
     if (app) { await eventually(() => [...app.host.players.values()].every(p => !p._connected && !p._disconnecting), 'final player saves finish'); await app.close(); }

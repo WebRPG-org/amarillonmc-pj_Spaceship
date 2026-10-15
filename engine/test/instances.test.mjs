@@ -6,6 +6,8 @@ import {GameHost} from '../server/instances.mjs';
 import {DIRECTIONS} from '../server/world.mjs';
 import {PUBLIC_CITY_MAPS,PUBLIC_CITY_SPAWN,PUBLIC_CITY_SERVICES,PUBLIC_CITY_VERSION} from '../server/public-city.mjs';
 import {addInventory} from '../server/combat.mjs';
+import {pointerCommand} from '../client/pointer.mjs';
+import {validateGameplay} from '../server/gameplay-content.mjs';
 
 const clone=x=>structuredClone(x);
 const deferred=()=>{let resolve;const promise=new Promise(r=>resolve=r);return{promise,resolve};};
@@ -431,6 +433,73 @@ test('ROSE tutorial completes every real action, unlocks once and carries only e
   const owner=f.host.getPlayer(p.id);await f.host.command(owner,{type:'equip',kind:'weapon',itemId:66});const awarded=ordinary.seed(owner);assert.equal(awarded.inventory.filter(i=>i.kind==='weapon'&&i.itemId===66).length,1);
 });
 
+test('ROSE unarmed lesson works through default mouse and keyboard commands after unequipping',async t=>{
+  for(const input of ['mouse','keyboard'])await t.test(input,async()=>{
+    const f=await fixture(),{p,r}=await tutorial(f,`rose-unarmed-${input}`);
+    for(const checkpoint of ['a','b','c']){
+      const event=[...r.world.maps.get(57).events.values()].find(e=>e.tutorialCheckpoint===checkpoint);
+      await walk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);await f.advance(50);
+    }
+    await portal(f,p,58);assert.equal(r.tutorial.step.id,'unarmed');
+    // Exercise the same equip / unequip commands used by the inventory buttons.
+    await f.host.command(p,{type:'equip',kind:'weapon',itemId:66});
+    await f.host.command(p,{type:'equip',kind:'weapon',itemId:0});
+    assert.equal(r.world.snapshot(p).self.equips.weapon,0);
+    const target=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='unarmed');
+    const requestId=`unarmed-${input}`;
+    if(input==='mouse'){
+      const command=pointerCommand({x:target.x+.5,y:target.y+.5},r.world.snapshot(p),{skillId:0,requestId});
+      assert.equal(command.targetId,target.id);assert.equal(command.skillId,undefined);
+      await f.host.command(p,command);await f.advance(12000);
+    }else{
+      const other=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='slash');
+      await f.host.command(p,pointerCommand({x:other.x+.5,y:other.y+.5},r.world.snapshot(p),{requestId:'wrong-training-target'}));
+      await f.advance(12000);
+      assert.equal(other.hp,other.maxHp);assert.equal(r.tutorial.step.id,'unarmed');
+      assert.ok(f.messages.get(p.id).some(m=>m.type==='notice'&&m.message.includes('劈斩训练员')&&m.message.includes('不是当前训练目标')));
+      await walk(f,p,pos=>Math.abs(pos.x-target.x)+Math.abs(pos.y-target.y)===1);
+      const direction=target.x>p.x?6:target.x<p.x?4:target.y>p.y?2:8;
+      // A real move command must face the blocking target; do not inject direction.
+      const position=[p.x,p.y];await f.host.command(p,{type:'move',direction,seq:0});
+      assert.deepEqual([p.x,p.y],position);assert.equal(p.direction,direction);
+      await f.host.command(p,{type:'navigate',cancel:true});
+      await f.host.command(p,{type:'attack',requestId});await f.advance(800);
+    }
+    await p._queue;
+    assert.equal(target.dead,true);assert.equal(r.tutorial.step.id,'slash');
+    assert.ok(f.messages.get(p.id).some(m=>m.type==='effect'&&m.kind==='damage'&&m.targetId===target.id&&m.value>0));
+  });
+});
+
+test('ROSE accepts unarmed attacks when an authored initial equipment slot is omitted',async t=>{
+  for(const input of ['mouse','keyboard'])await t.test(input,async()=>{
+    const f=await fixture();
+    // An omitted slot is valid authoring data; it must mean the same empty hand
+    // that the client displays, without requiring an equip / unequip workaround.
+    delete f.host.scenarios['rose-orientation'].initialState.equips.weapon;
+    assert.doesNotThrow(()=>validateGameplay({...f.content.gameplay,scenarios:f.host.scenarios},f.content));
+    const {p,r}=await tutorial(f,`rose-empty-slot-${input}`);
+    for(const checkpoint of ['a','b','c']){
+      const event=[...r.world.maps.get(57).events.values()].find(e=>e.tutorialCheckpoint===checkpoint);
+      await walk(f,p,pos=>Math.abs(pos.x-event.x)+Math.abs(pos.y-event.y)<=1);await f.advance(50);
+    }
+    await portal(f,p,58);assert.equal(r.tutorial.step.id,'unarmed');
+    assert.ok(!r.world.snapshot(p).self.equips.weapon,'the client reports an empty hand');
+    const target=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='unarmed');
+    if(input==='mouse'){
+      await f.host.command(p,pointerCommand({x:target.x+.5,y:target.y+.5},r.world.snapshot(p),{requestId:'missing-slot-mouse'}));
+      await f.advance(12000);
+    }else{
+      await walk(f,p,pos=>Math.abs(pos.x-target.x)+Math.abs(pos.y-target.y)===1);
+      const direction=target.x>p.x?6:target.x<p.x?4:target.y>p.y?2:8;
+      await f.host.command(p,{type:'move',direction});
+      await f.host.command(p,{type:'attack',requestId:'missing-slot-keyboard'});await f.advance(800);
+    }
+    assert.equal(target.dead,true,'an empty-handed normal attack defeats the first target');
+    assert.equal(r.tutorial.step.id,'slash');assert.equal(p.equips.weapon,0);
+  });
+});
+
 test('ROSE tutorial cannot skip wrong weapons, looting, crafting or graduation; free supplies recover consumed resources',async()=>{
   const f=await fixture(),{p,r}=await tutorial(f,'rose-guards');
   const other=await f.connect('rose-other');await assert.rejects(f.host.command(other,{type:'instance',action:'join',instanceId:r.id}),/不存在|私人/);
@@ -440,6 +509,7 @@ test('ROSE tutorial cannot skip wrong weapons, looting, crafting or graduation; 
   await portal(f,p,58);const e=[...r.world.maps.get(58).events.values()].find(e=>e.tutorialTarget==='unarmed');
   await f.host.command(p,{type:'equip',kind:'weapon',itemId:66});await walk(f,p,pos=>Math.abs(pos.x-e.x)+Math.abs(pos.y-e.y)===1);p.direction=e.x>p.x?6:e.x<p.x?4:e.y>p.y?2:8;
   await f.host.command(p,{type:'attack',skillId:1});await f.advance(700);assert.equal(e.dead,undefined);assert.equal(e.hp,1);assert.equal(r.tutorial.step.id,'unarmed');
+  assert.ok(f.messages.get(p.id).some(m=>m.type==='notice'&&m.message.includes('红杀铁剑')&&m.message.includes('卸下')),'equipped weapon rejection explains the required action');
   await assert.rejects(r.world.transfer(p,59,4,18),/先完成/);
   await assert.rejects(f.host.command(p,{type:'craft',recipeId:'item:40',requestId:'no-materials'}),/配方书|材料/);assert.equal(r.tutorial.step.id,'unarmed');
   p.inventory=p.inventory.filter(i=>!(i.kind==='item'&&[101,14].includes(i.itemId)));const thrown=p.inventory.find(i=>i.kind==='weapon'&&i.itemId===61);thrown.durability=0;

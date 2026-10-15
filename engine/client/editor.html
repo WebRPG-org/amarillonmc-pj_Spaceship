@@ -1,6 +1,6 @@
 <!doctype html>
 <html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Spaceship 内容工作台</title><link rel="stylesheet" href="/client/editor.css"><link rel="stylesheet" href="/client/editor-map.css"><link rel="stylesheet" href="/client/editor-events.css"></head>
-<body><header><a href="/">SPACESHIP</a><h1>内容工作台</h1><span class="badge">本机开发模式</span><button id="reload">重新载入</button></header>
+<body><header><a href="/">SPACESHIP</a><h1>内容工作台</h1><span class="badge">本机开发模式</span><button id="reload">重新载入</button><button id="restart" class="danger" title="保存玩家数据、结束当前副本并重新导入已保存的工程内容">重置（重启服务）</button></header>
 <div id="status" role="status">正在读取工程…</div><main><nav id="navigation"><button data-tab="scenarios">副本规则</button><button data-tab="maps">地图与实体</button><button data-tab="economy">经济与奖励</button><button data-tab="weapons">实时武器与工具</button><button data-tab="animations">动画资源</button><button data-tab="admin">运行管理</button></nav>
 <section id="workspace"><div id="toolbar"></div><div id="layout"><aside id="list"></aside><article id="details"></article><section id="preview"><div id="mapEditorRoot"></div><canvas id="map"></canvas><div id="previewNote">滚轮缩放 · 按住右键拖动</div></section></div></section></main>
 <footer>保存会备份原始文件，并检查外部修改。修改在重启服务后生效；已运行的副本不热更新。RM 未涉及的字段和事件页会保留。</footer><script type="module" src="/client/editor.mjs"></script></body></html>

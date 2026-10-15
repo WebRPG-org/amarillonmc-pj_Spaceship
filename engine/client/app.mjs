@@ -111,7 +111,7 @@ async function connect() {
     // Finish the body too, so the timeout cannot abort an otherwise successful probe.
     await response.text();
     if (state.token !== token || generation !== state.sessionGeneration) return;
-    if (response.status === 401) { logout(); $('login-error').textContent = '登录已失效或服务已重启，请重新登录。'; return; }
+    if (response.status === 401) { logout(); $('login-error').textContent = '登录已失效或服务已重启，请刷新页面后重新登录，以载入最新内容。'; return; }
     if (!response.ok) throw new Error(response.status === 503 ? '数据库暂不可用' : `服务暂不可用（${response.status}）`);
   } catch (error) {
     if (state.token !== token || generation !== state.sessionGeneration) return;
@@ -157,7 +157,7 @@ async function connect() {
   ws.onclose = event => {
     if (state.socket !== ws || state.preview || !state.token) return;
     setConnection('连接已中断'); state.keys.clear(); pointer.cancel(); state.ready = false; closeDialogue(); floatingText.clear(); chat.setAvailable(false);
-    if ([1008, 4001, 4003, 4401].includes(event.code)) { logout(); $('login-error').textContent = '登录已失效，请重新登录。'; return; }
+    if ([1008, 4001, 4003, 4401].includes(event.code)) { logout(); $('login-error').textContent = '登录已失效，请刷新页面后重新登录，以载入最新内容。'; return; }
     scheduleReconnect();
   };
   ws.onerror = () => { if (state.socket === ws) setConnection('连接失败'); };

@@ -61,7 +61,12 @@ export class World {
     const db=this.content.database,cl=db.Classes[player.classId||1];
     normalizeWeapons(player,this.content.weaponProfiles);
     player.equips||={};
-    for(const kind of ['weapon','armor'])if(player.equips[kind]&&!player.inventory?.some(i=>i.kind===kind&&i.itemId===player.equips[kind]&&i.quantity>0))player.equips[kind]=0;
+    for(const kind of ['weapon','armor']){
+      // Authored scenarios and older saves can omit an empty slot. Keep the
+      // canonical zero used by combat/tutorial checks and the equipment UI.
+      player.equips[kind] ||= 0;
+      if(player.equips[kind]&&!player.inventory?.some(i=>i.kind===kind&&i.itemId===player.equips[kind]&&i.quantity>0))player.equips[kind]=0;
+    }
     const p=Array.from({length:8},(_,i)=>finite(cl?.params?.[i]?.[Math.max(1,Math.min(99,player.level||1))],[150,60,25,15,25,15,15,15][i]));
     for(const item of [db.Weapons[player.equips?.weapon],db.Armors[player.equips?.armor]])if(item)for(let i=0;i<8;i++)p[i]+=item.params[i]||0;
     for(let i=0;i<8;i++)p[i]+=finite(player.paramPlus?.[i]);

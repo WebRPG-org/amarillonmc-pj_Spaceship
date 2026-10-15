@@ -9,7 +9,7 @@ export const TUTORIAL_STEPS=Object.freeze([
   lesson('move-a',57,'沿步道抵达检查点 A','嗨，我是 ROSE！放学后的生存课，开跑啦！WASD／方向键移动，也能点地面寻路。先到蓝色检查点 A；金色水晶去下一课，绿色水晶可回头。',{checkpoint:'a'}),
   lesson('move-b',57,'绕过障碍，抵达检查点 B','转弯很稳嘛！接下来绕过水湾到 B。按住鼠标拖向新格子能改路线；键盘移动、右键或 Esc 都能取消寻路。',{checkpoint:'b'}),
   lesson('move-c',57,'穿过折返通道，抵达检查点 C','最后一段是折返通道，别只顾盯终点哦！跨过第二座窄桥，穿过障碍到 C。Tab／Esc 打开背包，菜单开着时世界仍会继续。',{checkpoint:'c'}),
-  lesson('unarmed',58,'前往武器馆，空手击倒「拳脚训练员」','身法合格！进武器馆，先保持空手，面向拳脚训练员按 J／空格或「攻击」。点敌人也会自动靠近攻击；技能选「普通攻击」。',{weaponId:0,target:'unarmed',skillId:1}),
+  lesson('unarmed',58,'前往武器馆，空手击倒「拳脚训练员」','身法合格！进武器馆，先保持空手，贴近拳脚训练员，让它在正前方紧邻一格，再按 J／空格或「攻击」。也可直接点训练员自动靠近攻击；技能选「普通攻击」。',{weaponId:0,target:'unarmed',skillId:1}),
   lesson('slash',58,'装备借用的红杀铁剑，击倒「劈斩训练员」','打开背包装上红杀铁剑，这是课堂借用品！贴近劈斩训练员，用普通攻击横扫面前紧邻的三格。持剑移速慢 25%，先走位再出手，墙后打不到哦。',{weaponId:66,target:'slash',skillId:306}),
   lesson('throw',58,'装备回旋投刃，击倒「投掷训练员」','换回旋投刃试试！对准投掷训练员按普通攻击，直线投射最远六格，每次损耗一点耐久。障碍会挡住投射物，先找开阔角度。',{weaponId:61,target:'throw',skillId:301}),
   lesson('club',58,'装备重型棒槌，击倒「钝击训练员」','棒槌时间！装备重型棒槌，向钝击训练员挥一下。挥击覆盖身边两步以内的菱形区域，适合应付围攻；近战也要留意攻击间隔。',{weaponId:64,target:'club',skillId:304}),
@@ -49,14 +49,17 @@ export class TutorialRuntime {
   beforeHit(source,target,skill,tool){
     if(!target.tutorialTarget||target.mapId!==58)return true;
     if(!this.active(source)||!source._connected||source.mapId!==58)return false;
-    if(this.step.target!==target.tutorialTarget){this.wrongTarget(source);return false;}
-    const correct=source.equips?.weapon===this.step.weaponId&&skill.id===this.step.skillId;
-    if(!correct){this.wrongTarget(source);return false;}
+    if(this.step.target!==target.tutorialTarget)return this.rejectHit(source,`「${target.name}」不是当前训练目标。先${this.step.label}。`);
+    if(source.equips?.weapon!==this.step.weaponId){
+      const name=this.world.content.database.Weapons[source.equips?.weapon]?.name||'武器';
+      return this.rejectHit(source,this.step.weaponId===0?`你还装备着「${name}」。请在背包中点「卸下」，确认武器为「未装备」后再攻击。`:`这一步需要装备「${this.world.content.database.Weapons[this.step.weaponId]?.name}」，再用「普通攻击」。`);
+    }
+    if(skill.id!==this.step.skillId)return this.rejectHit(source,'武器已符合要求，请把右侧「当前技能」切换为「普通攻击」，再攻击训练员。');
     // Distinguish the two skill-1 tools even if equipment is changed mid-swing.
-    if(this.step.id==='unarmed'&&tool?.id!==this.world.content.getToolForSkill(1)?.id)return false;
+    if(this.step.id==='unarmed'&&tool?.id!==this.world.content.getToolForSkill(1)?.id)return this.rejectHit(source,'这次命中仍是先前武器的攻击。请保持空手，等待本次挥击结束后再用「普通攻击」。');
     target.tutorialQualified=this.step.id;return true;
   }
-  wrongTarget(player){if(this.round.clock()-(this.lastWrong||0)>3000){this.lastWrong=this.round.clock();this.world.notice(player,`ROSE：先${this.step.label}，技能选「普通攻击」。`);}}
+  rejectHit(player,message){if(this.round.clock()-(this.lastWrong??-Infinity)>3000){this.lastWrong=this.round.clock();this.world.notice(player,`ROSE：${message}`);}return false;}
   onEnemyDeath(enemy,player,outcome){
     if(!this.active(player))return;
     if(enemy.mapId===58&&enemy.tutorialQualified===this.step.id&&enemy.tutorialTarget===this.step.target){
